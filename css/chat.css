@@ -268,31 +268,28 @@ border: 1px solid rgba( 255, 255, 255, 0.18 );
       height: 50px;
     }
 	.button {
-  --main-focus: #2d8cf0;
-  --font-color: #ededed;
-  --bg-color-sub: rgba(79, 79, 79, 0.25);
-  --bg-color: rgba(26, 26, 26, 0.25);
-  box-shadow: 0 8px 32px 0 rgba(41, 41, 41, 0.37);
-backdrop-filter: blur( 10.5px );
-  --main-color: #323232;
-  position: absolute;
-  width: 150px;
-  height: 40px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  border: 2px solid var(--main-color);
-  box-shadow: 4px 4px var(--main-color);
-  background-color: var(--bg-color);
-  border-radius: 10px;
-  overflow: hidden;
-  position: absolute;
-    top: 10px;
-    right: 30px;
-    display: flex;
-    align-items: center;
-
-}
+      /* as before ... */
+      --main-focus: #2d8cf0;
+      --font-color: #00ff6a;
+      --bg-color-sub: #00ff6a;
+      --bg-color: rgba(26, 26, 26, 0.25);
+      box-shadow: 0 8px 32px 0 rgba(41, 41, 41, 0.37);
+      backdrop-filter: blur(10.5px);
+      --main-color: 	#00ff6a;
+      width: 150px;
+      height: 40px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      border: 2px solid var(--main-color);
+      box-shadow: 4px 4px var(--main-color);
+      background-color: var(--bg-color);
+      border-radius: 10px;
+      overflow: hidden;
+      position: absolute;
+      top: 10px;
+      right: 30px;
+    }
 
 .button, .button__icon, .button__text {
   transition: all 0.3s;
