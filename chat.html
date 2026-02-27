@@ -228,8 +228,12 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/webtorrent/1.9.7/webtorrent.min.js"></script>
+  <script src="/js/chat-client.js"></script>
 
   <script>
+    // ═══════════════════════════════════════════════════════════════
+    //  VANTA BACKGROUND
+    // ═══════════════════════════════════════════════════════════════
     VANTA.WAVES({
       el: "#vanta-canvas",
       mouseControls: true,
@@ -243,7 +247,9 @@
       zoom: 0.78
     });
 
-    // DOM elements
+    // ═══════════════════════════════════════════════════════════════
+    //  DOM ELEMENTS
+    // ═══════════════════════════════════════════════════════════════
     const msgInput = document.getElementById('msgInput');
     const sendBtn = document.getElementById('sendBtn');
     const messagesContainer = document.querySelector('.message-container');
@@ -259,84 +265,70 @@
     const emojibtn = document.getElementById('emoji-button');
     const client = new WebTorrent();
     const uploadInput = document.getElementById('uploadFile');
-    let peerConnection, dataChannel;
-    let localStream = null;
-    let remoteStream = null;
     const cameraBtn = document.getElementById('cameraAvatarBtn');
     const cameraPreview = document.getElementById('cameraPreview');
-    let cameraStream = null;
-    const params = new URLSearchParams(window.location.search);
-    const roomCode = sessionStorage.getItem('roomCode');
-    const role = sessionStorage.getItem('myRole');
     const customAvatarInput = document.getElementById('customAvatarInput');
     const viewMoreBtn = document.getElementById('viewMoreAvatars');
     const avatarDialog = document.getElementById('avatarDialog');
     const avatarGrid = avatarDialog.querySelector('.avatar-grid');
     const closeDialog = avatarDialog.querySelector('.close-avatar-dialog');
-    let peerAvatar = 'avatars/avatar0.avif';
-    let currentAvatar = 'avatars/avatar0.avif';
     const senderAvatar = document.getElementById('senderAvatar');
     const avatarChoices = document.querySelectorAll('.avatar-choice');
-    const myMessages = {}; // 
+    const shareFileBtn = document.getElementById('shareFileBtn');
+
+    // ═══════════════════════════════════════════════════════════════
+    //  UI STATE VARIABLES
+    // ═══════════════════════════════════════════════════════════════
+    let cameraStream = null;
+    let peerAvatar = 'avatars/avatar0.avif';
+    let currentAvatar = 'avatars/avatar0.avif';
+    const myMessages = {};
     const unseenPeerMsgIds = new Set();
     let typingTimeout;
-    const shareFileBtn = document.getElementById('shareFileBtn');
-    let retryQueue = [];
-    let retryInterval = null;
-    let reconnectAttempts = 0;
-    let maxReconnectAttempts = 20;
-    let reconnectIntervalMs = 2000;
-    let reconnectTimer = null;
-    let hasEverConnected = false;  // declare this once at top of your script
 
+    // ═══════════════════════════════════════════════════════════════
+    //  SESSION — get roomCode and role from sessionStorage
+    // ═══════════════════════════════════════════════════════════════
+    const roomCode = sessionStorage.getItem('roomCode');
+    const role = sessionStorage.getItem('myRole');
 
+    if (!roomCode || !role) {
+      alert('Room or role missing!');
+      location.href = '/';
+    }
 
+    // ═══════════════════════════════════════════════════════════════
+    //  INITIALIZE SIGNALING CLIENT & PEER MANAGER
+    // ═══════════════════════════════════════════════════════════════
+    const signaling = new SignalingClient(roomCode, role);
+    const peer = new PeerManager(signaling, roomCode, role);
 
-    //# --------------------------------------------FUNCTION FOR EMOJI HANDLERS----------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════
+    //  EMOJI HANDLERS
+    // ═══════════════════════════════════════════════════════════════
     window.addEventListener('DOMContentLoaded', () => {
       const emojiBtn = document.getElementById('emoji-button');
       let emojiPicker = document.getElementById('custom-emoji-picker');
       const msgInput = document.getElementById('msgInput');
-
-      // Move picker to body to avoid overflow clipping
       document.body.appendChild(emojiPicker);
 
       emojiBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-
         const pickerVisible = emojiPicker.style.display === 'block';
-        if (pickerVisible) {
-          emojiPicker.style.display = 'none';
-          return;
-        }
-
+        if (pickerVisible) { emojiPicker.style.display = 'none'; return; }
         emojiPicker.style.display = 'block';
-
         const rect = emojiBtn.getBoundingClientRect();
-        const pickerHeight = 280; // matches your CSS height
-        const pickerWidth = 260;
-
-        // Default position: below button
+        const pickerHeight = 280, pickerWidth = 260;
         let top = rect.bottom + window.scrollY + 8;
         let left = rect.left + window.scrollX;
-
-        // If not enough space below, show above
-        if (window.innerHeight - rect.bottom < pickerHeight) {
-          top = rect.top + window.scrollY - pickerHeight - 8;
-        }
-
-        // If picker goes out of right boundary, shift left
-        if (left + pickerWidth > window.innerWidth) {
-          left = window.innerWidth - pickerWidth - 8;
-        }
-
+        if (window.innerHeight - rect.bottom < pickerHeight) top = rect.top + window.scrollY - pickerHeight - 8;
+        if (left + pickerWidth > window.innerWidth) left = window.innerWidth - pickerWidth - 8;
         emojiPicker.style.position = 'absolute';
         emojiPicker.style.left = left + 'px';
         emojiPicker.style.top = top + 'px';
         emojiPicker.style.zIndex = 99999;
       });
 
-      // Insert emoji into input
       emojiPicker.addEventListener('emoji-click', event => {
         const emoji = event.detail.unicode;
         const start = msgInput.selectionStart;
@@ -348,43 +340,24 @@
         emojiPicker.style.display = 'none';
       });
 
-      // Hide when clicking anywhere outside
       document.addEventListener('click', (e) => {
-        if (!emojiPicker.contains(e.target) && e.target !== emojiBtn) {
-          emojiPicker.style.display = 'none';
-        }
+        if (!emojiPicker.contains(e.target) && e.target !== emojiBtn) emojiPicker.style.display = 'none';
       });
     });
 
-    // ---------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-
+    // ═══════════════════════════════════════════════════════════════
+    //  BUTTON BINDINGS
+    // ═══════════════════════════════════════════════════════════════
     sendBtn.onclick = sendmsg;
     shareFileBtn.onclick = () => uploadInput.click();
 
-
-    const socket = io({
-      reconnection: true,
-      reconnectionAttempts: 10, // retry 10 times
-      reconnectionDelay: 2000,  // wait 2s between retries
-      reconnectionDelayMax: 5000,
-    });
-    ;
-
-    if (!roomCode || !role) {
-      alert('Room or role missing!');
-      location.href = '/';
-    }
-
-
-    // # -----------------------------------------------------------FOR HANDLING THE PAGE CLOSING OR REFRESHING-------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════
+    //  PAGE LIFECYCLE
+    // ═══════════════════════════════════════════════════════════════
     window.addEventListener("beforeunload", function (event) {
-      //socket.emit('leave-room', roomCode);
       event.preventDefault();
       event.returnValue = "";
     });
-
 
     window.addEventListener("pageshow", function (event) {
       if (event.persisted || (window.performance && window.performance.navigation.type === 2)) {
@@ -392,50 +365,15 @@
       }
     });
 
-    //------------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-
-    // # --------------------------------------INITIAL ROOM CREATION AND  JOINING THE ROOM RESPECTIVE OF THEIR ROLE-----------------------------------------------------------
-
-    // start-chat listener is GLOBAL so both user1 and user2 receive it (especially during reconnection)
-    socket.on('start-chat', data => {
-      enableChat();
-      hasEverConnected = true;
-      showStatus('Peer has joined the chat!', 'success');
-    });
-
-    if (role === 'user1') {
-      socket.emit('create-room', roomCode, resp => {
-        if (!resp.success) {
-          alert(resp.msg || 'Could not create room.');
-          location.href = '/';
-          return;
-        }
-      });
-    } else if (role === 'user2') {
-      socket.emit('join-room', roomCode, resp => {
-        if (!resp.success) {
-          alert(resp.msg || 'Could not join room.');
-          location.href = '/';
-          return;
-        }
-        enableChat();
-        showStatus('You have joined the chat!', 'success');
-      });
-    }
-
-    //-----------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-
-    // # ------------------------------------------------ENABLE CHAT INPUT AND BUTTONS AND HELPER FUNCTIONS----------------------------------------------
+    // ═══════════════════════════════════════════════════════════════
+    //  ENABLE / DISABLE CHAT UI
+    // ═══════════════════════════════════════════════════════════════
     function enableChat() {
       waitingEl.style.display = 'none';
       msgInput.disabled = false;
       sendBtn.disabled = false;
       msgInput.focus();
-      setupWebRTC();
+      peer.setup(); // Setup WebRTC if not already
     }
 
     function disableChat() {
@@ -444,154 +382,144 @@
       sendBtn.disabled = true;
     }
 
-    disableChat();
+    disableChat(); // Start disabled, waiting for peer
 
+    // ═══════════════════════════════════════════════════════════════
+    //  WIRE UP SIGNALING EVENTS → UI
+    // ═══════════════════════════════════════════════════════════════
+    signaling.on('error', (msg) => {
+      alert(msg);
+      location.href = '/';
+    });
 
+    signaling.on('room-ready', () => {
+      // Room created/joined, waiting for peer (user1) or ready (user2)
+    });
 
-    // # --------------------------------------------------SETUP THE WEBRTC CONNECTION----------------------------------------------------------------
-    function setupWebRTC() {
-      if (peerConnection) {
-        return;
-      };
-      peerConnection = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          }
-        ],
-        iceCandidatePoolSize: 10
-      });
+    signaling.on('peer-joined', () => {
+      enableChat();
+      showStatus('Peer has joined the chat!', 'success');
+    });
 
-      peerConnection.oniceconnectionstatechange = () => {
-        const state = peerConnection.iceConnectionState;
-        console.log("ICE state:", state);
+    signaling.on('disconnected', () => {
+      showStatus('Disconnected from server.', 'error');
+      disableChat();
+      hideVideoUI();
+      showReconnectToast(
+        `<i class="fa-solid fa-rotate-right"></i> Connection lost. Trying to reconnect...`,
+        'info'
+      );
+    });
 
-        if (state === "disconnected" || state === "failed") {
-          showStatus("⚠️ Peer connection lost. Trying to recover...", "error");
-          restartWebRTC();
-        }
-        if (state === "connected") {
-          if (!hasEverConnected) {
-            showStatus("✅ Peer connected!", "success");
-            hasEverConnected = true;
-          } else {
-            showStatus("✅ Peer reconnected!", "success");
-          }
-        }
-      };
+    signaling.on('reconnected', () => {
+      hideReconnectToast();
+      showStatus('Reconnected!', 'success');
+    });
 
+    signaling.on('reconnect-attempt', (attempt, max) => {
+      showReconnectToast(
+        `<i class="fa-solid fa-rotate-right"></i> Reconnecting... (${attempt}/${max})`,
+        'info'
+      );
+    });
 
-      peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-          socket.emit('ice-candidate', { roomCode, candidate: event.candidate });
-        }
-      };
-      peerConnection.ontrack = handleRemoteTrack;
+    signaling.on('reconnect-failed', () => {
+      showReconnectToast(
+        `<i class="fa-solid fa-triangle-exclamation"></i> Could not reconnect. Please reload.`,
+        'error'
+      );
+    });
 
-      if (role === 'user1') {
-        dataChannel = peerConnection.createDataChannel('chat');
-        bindDataChannel();
-        peerConnection.createOffer()
-          .then(offer => peerConnection.setLocalDescription(offer))
-          .then(() => {
-            socket.emit('offer', { roomCode, sdp: peerConnection.localDescription });
-          });
+    signaling.on('peer-left', () => {
+      peer.cleanup();
+      showStatus('Peer has left the room. You will be redirected to home page', 'info');
+      setTimeout(() => { window.location.replace("/index.html"); }, 5000);
+    });
+
+    signaling.on('restart-webrtc', () => {
+      peer.cleanup();
+      enableChat();
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    //  WIRE UP PEER MANAGER EVENTS → UI
+    // ═══════════════════════════════════════════════════════════════
+    peer.on('connected', (isFirst) => {
+      if (isFirst) {
+        showStatus("✅ Peer connected!", "success");
       } else {
-        peerConnection.ondatachannel = (event) => {
-          dataChannel = event.channel;
-          bindDataChannel();
-        }
+        showStatus("✅ Peer reconnected!", "success");
       }
-    }
+    });
 
-    //-----------------------------------------------------------------------------------------------------------------------------------------------
+    peer.on('ice-disconnected', () => {
+      showStatus("⚠️ Peer connection lost. Trying to recover...", "error");
+    });
 
+    peer.on('ice-failed', () => {
+      showStatus("⚠️ Peer connection failed. Restarting...", "error");
+    });
 
-    // # ---------------------------------MAIN FUNCTION TO SEND MESSAGE FROM PEER TO PEER--------------------------------------------------------------
+    peer.on('datachannel-open', () => {
+      if (role === 'user2') msgInput.focus();
+    });
 
-    function bindDataChannel() {
-      if (!dataChannel) return;
-      dataChannel.onopen = () => {
-        if (role === 'user2') msgInput.focus();
+    peer.on('datachannel-close', () => {
+      showStatus('Peer connection closed.', 'info');
+    });
 
-        // ---- RETRY QUEUED MESSAGES ON DATA CHANNEL OPEN ----
-        while (retryQueue.length > 0 && dataChannel && dataChannel.readyState === 'open') {
-          dataChannel.send(retryQueue.shift());
-          dataChannel.send('__stop_typing__');
+    peer.on('datachannel-error', (e) => {
+      showStatus('Data channel error: ' + (e.message || ''), 'error');
+    });
+
+    peer.on('remote-track', (event) => {
+      handleRemoteTrack(event);
+    });
+
+    // Handle data channel messages
+    peer.on('datachannel-message', (data) => {
+      try {
+        var msgData = JSON.parse(data);
+        if (msgData.type === 'disconnect') {
+          showStatus('Peer has disconnected.', 'info');
+          stoppeercall();
         }
-        // If you use a retryInterval timer, clear it if queue is empty
-        if (retryQueue.length === 0 && retryInterval) {
-          clearInterval(retryInterval);
-          retryInterval = null;
+        if (msgData.type === 'call') {
+          alertingpeer(msgData.callType);
         }
-      };
-      dataChannel.onmessage = e => {
-        try {
-          var msgData = JSON.parse(e.data);
-          if (msgData.type === 'disconnect') {
-            showStatus('Peer has disconnected.', 'info');
-            stoppeercall();
-          }
-          if (msgData.type === 'call') {
-            alertingpeer(msgData.callType);
-          }
-          if (msgData.type === 'file' && msgData.magnet) {
-            showReceivedFile(msgData.name, msgData.magnet, msgData.avatar, msgData.id);
-          }
-          if (msgData.type === 'chat') {
-            appendPeerMsg(msgData.text, msgData.id, msgData.avatar || '/avatar1.avif');
-            hideTyping();
-          }
-          else if (msgData.type === 'seen') {
-            markMessageAsSeen(msgData.id);
-          }
-          if (msgData.type === "peer-offline") {
-            disableChat();
-            showStatus("⚠️ Peer lost internet. Please wait...", "info");
-          } if (msgData.type === "peer-online") {
-            enableChat();
-            showStatus("✅ Peer is back online!", "success");
-          }
-
+        if (msgData.type === 'file' && msgData.magnet) {
+          showReceivedFile(msgData.name, msgData.magnet, msgData.avatar, msgData.id);
         }
-        catch {
-          if (e.data === '__typing__') {
-            showTyping();
-          }
-          else if (e.data === '__stop_typing__') {
-            hideTyping();
-          }
-          else {
-            appendPeerMsg(e.data); // fallback
-            hideTyping();
-          }
+        if (msgData.type === 'chat') {
+          appendPeerMsg(msgData.text, msgData.id, msgData.avatar || '/avatar1.avif');
+          hideTyping();
         }
-      };
-      dataChannel.onerror = e => {
-        showStatus('Data channel error: ' + e.message, 'error');
-      };
-      dataChannel.onclose = () => {
-        showStatus('Peer connection closed.', 'info');
+        else if (msgData.type === 'seen') {
+          markMessageAsSeen(msgData.id);
+        }
+        if (msgData.type === "peer-offline") {
+          disableChat();
+          showStatus("⚠️ Peer lost internet. Please wait...", "info");
+        }
+        if (msgData.type === "peer-online") {
+          enableChat();
+          showStatus("✅ Peer is back online!", "success");
+        }
+      } catch {
+        if (data === '__typing__') { showTyping(); }
+        else if (data === '__stop_typing__') { hideTyping(); }
+        else { appendPeerMsg(data); hideTyping(); }
       }
-    }
+    });
 
-    // # ------------------------------------------HELPER FUNCTION TO APPEND PEER MESSAGE AND USER OWN MESSAGES----------------------------------------
+    // ═══════════════════════════════════════════════════════════════
+    //  CONNECT!
+    // ═══════════════════════════════════════════════════════════════
+    signaling.connect();
 
-
+    // ═══════════════════════════════════════════════════════════════
+    //  SEND MESSAGE
+    // ═══════════════════════════════════════════════════════════════
     function sendmsg() {
       var messageInput = document.getElementById('msgInput');
       var messageText = messageInput.value;
@@ -604,15 +532,11 @@
           avatarToSend = snapshotData || '/avatar.avif';
         }
         let encryptedtext = CryptoJS.AES.encrypt(messageText, roomCode).toString();
-        console.log('Encrypted message:', encryptedtext);
         var messageObj = JSON.stringify({
-          type: 'chat',
-          id: messageId,
-          text: encryptedtext,
-          avatar: avatarToSend // this will be the camera snapshot if live camera active
+          type: 'chat', id: messageId, text: encryptedtext, avatar: avatarToSend
         });
 
-        // UI feedback in all cases: show message immediately as pending
+        // UI feedback
         var newMessage = document.createElement('div');
         newMessage.classList.add('message', 'sender-message');
         newMessage.id = 'msg-' + messageId;
@@ -620,57 +544,23 @@
       <span>${messageText}</span>
       <span class="plane-icon" title="Sent, not seen yet" style="margin-left:6px;vertical-align:middle;">
         <dotlottie-wc src="https://lottie.host/dbbd388f-f27a-4e67-ad9b-c38286d2d291/x6rAlcZWDe.lottie"
-        style="width: 42px;height: 40px"
-        speed="1"
-        autoplay
-        loop
-        ></dotlottie-wc>
+        style="width: 42px;height: 40px" speed="1" autoplay loop></dotlottie-wc>
       </span>
        <span class="seen-icon" style="display:none;margin-left:6px;vertical-align:middle;" title="Seen"><dotlottie-wc
   src="https://lottie.host/a3100caf-d968-4f2a-809c-d2a23630d6c6/rjOs1D7sNu.lottie"
-  style="width: 40px;height: 40px"
-  speed="1.4"
-></dotlottie-wc></span>`;
+  style="width: 40px;height: 40px" speed="1.4"></dotlottie-wc></span>`;
         messagesContainer.appendChild(newMessage);
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
         myMessages[messageId] = { element: newMessage, seen: false };
 
-        // Core retry-enabled send logic
-        function actuallySend() {
-          if (dataChannel && dataChannel.readyState === 'open') {
-            dataChannel.send(messageObj);
-            dataChannel.send('__stop_typing__');
-            return true;
-          } else {
-            return false;
-          }
-        }
-
-        if (!actuallySend()) {
-          // Data channel is NOT open — queue for retry
-          retryQueue.push(messageObj);
-
-          if (!retryInterval) {
-            retryInterval = setInterval(() => {
-              while (retryQueue.length > 0 && dataChannel && dataChannel.readyState === 'open') {
-                dataChannel.send(retryQueue.shift());
-                dataChannel.send('__stop_typing__');
-              }
-              if (retryQueue.length === 0) {
-                clearInterval(retryInterval);
-                retryInterval = null;
-              }
-            }, 2000); // Check every 2 seconds
-          }
-        }
+        // Send via PeerManager (handles retry queue automatically)
+        peer.send(messageObj);
+        peer.send('__stop_typing__');
       }
       messageInput.value = '';
     }
 
-
-
     function appendPeerMsg(text, id, avatar = '/avatar1.avif') {
-      console.log('Received message:', text)
       peerAvatar = avatar;
       let decryptedtext = CryptoJS.AES.decrypt(text, roomCode).toString(CryptoJS.enc.Utf8);
       var newMessage = document.createElement('div');
@@ -687,38 +577,23 @@
       }
     }
 
-    // ----------------------------------------------------------------------------------------------------------------------------------------------
-
-
-    // # -------------------------------------------------------- FUNCTIONS FOR FILE HANDLING AND SENDING--------------------------------------------------------------------
-
+    // ═══════════════════════════════════════════════════════════════
+    //  FILE SHARING (WebTorrent)
+    // ═══════════════════════════════════════════════════════════════
     function showSenderFilePreview(name, avatar, tmpId) {
-      const container = messagesContainer; // Use your normal chat message container
-
-      // Optionally shorten the file name
+      const container = messagesContainer;
       function shortenFileName(name, maxChars = 18) {
         return name.length > maxChars ? name.slice(0, maxChars) + '...' : name;
       }
       const displayName = shortenFileName(name);
-
-      // Build the sender bubble with avatar and file details
       const msgDiv = document.createElement('div');
       msgDiv.className = 'message sender-message';
       msgDiv.id = 'msg-pending-file-' + tmpId;
-
       msgDiv.innerHTML = `
     <span class="avatar-progress-container" style="position:relative;display:inline-block;">
       <img src="${avatar}" alt="Sender Avatar" class="avatar">
       <svg class="avatar-progress-ring" width="36" height="36" style="position:absolute;top:-3px;left:-3px;pointer-events:none;z-index:1;">
-        <circle
-          class="progress-ring__circle"
-          stroke="#00ff6a"
-          stroke-width="3"
-          fill="transparent"
-          r="16"
-          cx="18"
-          cy="18"
-        />
+        <circle class="progress-ring__circle" stroke="#00ff6a" stroke-width="3" fill="transparent" r="16" cx="18" cy="18"/>
       </svg>
     </span>
     <span><i class="fa-solid fa-file-arrow-up" style="color:#00ff6a;font-size:17px;vertical-align:middle;"></i></span>
@@ -726,9 +601,7 @@
     <span class="file-progress"></span>
      <span class="seen-icon" style="display:none;margin-left:6px;vertical-align:middle;" title="Seen"><dotlottie-wc
   src="https://lottie.host/a3100caf-d968-4f2a-809c-d2a23630d6c6/rjOs1D7sNu.lottie"
-  style="width: 40px;height: 40px"
-  speed="1.4"
-></dotlottie-wc></span>
+  style="width: 40px;height: 40px" speed="1.4"></dotlottie-wc></span>
   `;
       container.appendChild(msgDiv);
       container.scrollTop = container.scrollHeight;
@@ -740,14 +613,10 @@
       if (!file) return;
       const tmpId = Date.now();
       let avatarToSend = currentAvatar;
-      let snapshotData = null;
       if (currentAvatar === 'camera_live') {
-        snapshotData = getCameraSnapshot();
+        const snapshotData = getCameraSnapshot();
         avatarToSend = snapshotData || '/avatar.avif';
       }
-
-
-      // Show the file preview in sender's chat
       const previewDiv = showSenderFilePreview(file.name, avatarToSend, tmpId);
       const progressEl = previewDiv.querySelector('.file-progress');
       const circle = previewDiv.querySelector('.progress-ring__circle');
@@ -758,64 +627,32 @@
         const offset = circumference - (percent / 100) * circumference;
         circle.style.strokeDashoffset = offset;
       }
-
       client.seed(file, torrent => {
-        // Progress feedback
-
-        // Once seeding started, show sent message and notify peer
-        if (dataChannel && dataChannel.readyState === 'open') {
+        if (peer.isDataChannelOpen()) {
           const fileMsg = JSON.stringify({
-            type: 'file',
-            name: file.name,
-            magnet: torrent.magnetURI,
-            avatar: avatarToSend,
-            id: tmpId  // can use the same tmpId for reference
+            type: 'file', name: file.name, magnet: torrent.magnetURI, avatar: avatarToSend, id: tmpId
           });
-          dataChannel.send(fileMsg);
-
-          // (Optional) Mark as sent UI-wise
-          progressEl.textContent = ""; // Clear progress
+          peer.send(fileMsg);
+          progressEl.textContent = "";
           setProgress(100);
-          setTimeout(() => {
-            circle.style.opacity = 0;
-          }, 600);
+          setTimeout(() => { circle.style.opacity = 0; }, 600);
         } else {
           progressEl.textContent = '❗ Data channel not open!';
         }
       });
     });
 
-
-
-
-
-    function setProgress(percent) {
-      const offset = circumference - (percent / 100) * circumference;
-      circle.style.strokeDashoffset = offset;
-    }
-
     function showReceivedFile(name, magnet, avatar, id) {
       const container = messagesContainer;
-      //const displayName = shortenFileName(name);
       const shortenedName = name.length > 10 ? name.slice(0, 7) + '...' : name;
       const msgDiv = document.createElement('div');
       msgDiv.className = 'message receiver-message';
       msgDiv.id = 'msg-in-file-' + (id || Date.now());
-
       msgDiv.innerHTML = `
     <span class="avatar-progress-container" style="position:relative;display:inline-block;">
       <img src="${avatar}" alt="Sender Avatar" class="avatar">
       <svg class="avatar-progress-ring" width="36" height="36" style="position:absolute;top:-3px;left:-3px;pointer-events:none;z-index:1;">
-        <circle
-          class="progress-ring__circle"
-          stroke="#00ff6a"
-          stroke-width="3"
-          fill="transparent"
-          r="16"
-          cx="18"
-          cy="18"
-          style="transition: stroke-dasharray 0.15s;"
-        />
+        <circle class="progress-ring__circle" stroke="#00ff6a" stroke-width="3" fill="transparent" r="16" cx="18" cy="18" style="transition: stroke-dasharray 0.15s;"/>
       </svg>
     </span>
     <span><i class="fa-solid fa-file-arrow-down" style="color:#00ff6a;font-size:17px;vertical-align:middle;"></i></span>
@@ -823,274 +660,160 @@
     <button class="shared-file-download" style="margin-right:8px;">Download</button>
     <span class="file-progress"></span>
     <span class="plane-icon" title="Sent, not seen yet" style="margin-left:6px;vertical-align:middle;"></span>
-     <span class="seen-icon" style="display:none;margin-left:6px;vertical-align:middle;title="Seen"><dotlottie-wc
+     <span class="seen-icon" style="display:none;margin-left:6px;vertical-align:middle;" title="Seen"><dotlottie-wc
   src="https://lottie.host/a3100caf-d968-4f2a-809c-d2a23630d6c6/rjOs1D7sNu.lottie"
-  style="width: 40px;height: 40px"
-  speed="1.4"
-></dotlottie-wc></span>
+  style="width: 40px;height: 40px" speed="1.4"></dotlottie-wc></span>
   `;
-
       const svgRing = msgDiv.querySelector('.avatar-progress-ring');
       const circle = msgDiv.querySelector('.progress-ring__circle');
       const radius = 16;
       const circumference = 2 * Math.PI * radius;
-
       circle.style.strokeDasharray = `${circumference} ${circumference}`;
       circle.style.strokeDashoffset = circumference;
-
       const setProgress = (percent) => {
         const offset = circumference - (percent / 100) * circumference;
         circle.style.strokeDashoffset = offset;
       };
-
       const downloadBtn = msgDiv.querySelector('.shared-file-download');
       const progressEl = msgDiv.querySelector('.file-progress');
-
       downloadBtn.onclick = function () {
         downloadBtn.disabled = true;
         progressEl.textContent = "Downloading...";
-        downloadBtn.style.display = 'none'; // Optionally hide download button
+        downloadBtn.style.display = 'none';
         setProgress(0);
-
         client.add(magnet, torrent => {
           let fileBlobURL = null;
           torrent.on('download', () => {
             const percent = ((torrent.downloaded / torrent.length) * 100);
             setProgress(percent);
           });
-
           torrent.on('done', () => {
             progressEl.textContent = "Downloaded!";
             torrent.files.forEach(file => {
               file.getBlob((err, blob) => {
-                if (err) {
-                  progressEl.textContent = "Error downloading file";
-                  return console.error(err);
-                }
-                // Create a temporary URL & store it
+                if (err) { progressEl.textContent = "Error downloading file"; return console.error(err); }
                 fileBlobURL = URL.createObjectURL(blob);
-
-                // Auto-download once
                 const a = document.createElement('a');
-                a.style.display = "none";
-                a.href = fileBlobURL;
-                a.download = file.name;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                // DON'T revoke the Blob URL yet
-
-                downloadBtn.style.display = ''; // Optionally hide download button
+                a.style.display = "none"; a.href = fileBlobURL; a.download = file.name;
+                document.body.appendChild(a); a.click(); a.remove();
+                downloadBtn.style.display = '';
                 downloadBtn.disabled = false;
                 downloadBtn.textContent = "Download Again";
                 downloadBtn.onclick = function () {
-                  // Re-download
                   const a2 = document.createElement('a');
-                  a2.style.display = "none";
-                  a2.href = fileBlobURL;
-                  a2.download = file.name;
-                  document.body.appendChild(a2);
-                  a2.click();
-                  a2.remove();
+                  a2.style.display = "none"; a2.href = fileBlobURL; a2.download = file.name;
+                  document.body.appendChild(a2); a2.click(); a2.remove();
                 };
               });
             });
           });
         });
-
       };
-
       container.appendChild(msgDiv);
       container.scrollTop = container.scrollHeight;
     }
 
-    // ------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-    // # --------------------------------- FUNCTIONS FOR CAMERA AVATAR SELECTION AND HANDLING -------------------------------------------------------------
-
-
+    // ═══════════════════════════════════════════════════════════════
+    //  CAMERA AVATAR
+    // ═══════════════════════════════════════════════════════════════
     cameraBtn.addEventListener('click', async function () {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert('Camera not supported!');
-        return;
-      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { alert('Camera not supported!'); return; }
       try {
         cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
         cameraPreview.srcObject = cameraStream;
         cameraPreview.style.display = 'block';
-        senderAvatar.style.display = 'none'; // Clear the avatar image
-        // Set as selected avatar visually
+        senderAvatar.style.display = 'none';
         document.querySelectorAll('.avatar-choice').forEach(a => a.classList.remove('selected'));
         cameraBtn.classList.add('selected');
-        // Set currentAvatar to special value
         currentAvatar = 'camera_live';
-        senderAvatar.src = ''; // You can set a placeholder, or leave blank
-      } catch (err) {
-        alert('Unable to access camera: ' + err.message);
-      }
+        senderAvatar.src = '';
+      } catch (err) { alert('Unable to access camera: ' + err.message); }
     });
 
     function getCameraSnapshot() {
       if (!cameraPreview.srcObject) return null;
       const canvas = document.createElement('canvas');
-      canvas.width = cameraPreview.videoWidth;
-      canvas.height = cameraPreview.videoHeight;
+      canvas.width = cameraPreview.videoWidth; canvas.height = cameraPreview.videoHeight;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(cameraPreview, 0, 0, canvas.width, canvas.height);
-      // Use 'image/jpeg' and specify a lower quality such as 0.5 (range: 0–1)
       return canvas.toDataURL('image/jpeg', 0.5);
     }
 
     const avatarImages = [];
-    for (let i = 0; i < 16; i++) {
-      avatarImages.push(`/avatars/avatar${i}.avif`);
-    }
+    for (let i = 0; i < 16; i++) avatarImages.push(`/avatars/avatar${i}.avif`);
 
     viewMoreBtn.addEventListener('click', function () {
-      // Clear and fill avatars in grid
       avatarGrid.innerHTML = '';
       for (let i = 0; i < 16; i++) {
         const img = document.createElement('img');
-        img.className = 'avatar-choice';
-        img.tabIndex = 0;
+        img.className = 'avatar-choice'; img.tabIndex = 0;
         if (avatarImages[i]) {
-          img.src = avatarImages[i];
-          img.dataset.avatar = avatarImages[i];
+          img.src = avatarImages[i]; img.dataset.avatar = avatarImages[i];
           img.addEventListener('click', function () {
-            // Select avatar logic
-            currentAvatar = this.dataset.avatar;
-            senderAvatar.src = this.dataset.avatar;
-            // visually reflect selection
+            currentAvatar = this.dataset.avatar; senderAvatar.src = this.dataset.avatar;
             document.querySelectorAll('.avatar-choice').forEach(a => a.classList.remove('selected'));
             this.classList.add('selected');
             avatarDialog.style.display = 'none';
           });
-        } else {
-          // empty slot for less than 16 avatars
-          img.style.opacity = '0';
-          img.style.pointerEvents = 'none';
-        }
-        // Mark selected
+        } else { img.style.opacity = '0'; img.style.pointerEvents = 'none'; }
         if (avatarImages[i] === currentAvatar) img.classList.add('selected');
         avatarGrid.appendChild(img);
       }
       avatarDialog.style.display = 'flex';
     });
     closeDialog.onclick = () => avatarDialog.style.display = 'none';
+    avatarDialog.onclick = function (e) { if (e.target === avatarDialog) avatarDialog.style.display = 'none'; };
 
-    // Optional: close when clicking outside modal
-    avatarDialog.onclick = function (e) {
-      if (e.target === avatarDialog) avatarDialog.style.display = 'none';
-    };
-
-    // When the input (file selector) changes
     customAvatarInput.addEventListener('change', function () {
-      const file = this.files[0];
-      if (!file) return;
-
+      const file = this.files[0]; if (!file) return;
       const reader = new FileReader();
       reader.onload = function (e) {
-        // Set currentAvatar to the encoded image
-        currentAvatar = e.target.result;
-        senderAvatar.src = currentAvatar;
-
-        // Optionally highlight the custom avatar visually
+        currentAvatar = e.target.result; senderAvatar.src = currentAvatar;
         const avatarChoices = document.querySelectorAll('.avatar-choice');
         avatarChoices.forEach(choice => choice.classList.remove('selected'));
-        // This input is inside a .avatar-choice label
         customAvatarInput.parentElement.classList.add('selected');
       };
       reader.readAsDataURL(file);
     });
 
-
     const avatarOptions = document.getElementById('avatarOptions');
-
     let optionHover = false, avatarHover = false;
-
-    avatarContainer.addEventListener('mouseenter', () => {
-      avatarOptions.style.display = 'flex';
-      avatarHover = true;
-    });
-    avatarContainer.addEventListener('mouseleave', () => {
-      setTimeout(() => {
-        if (!optionHover && !avatarHover) avatarOptions.style.display = 'none';
-      }, 50);
-    });
-    avatarOptions.addEventListener('mouseenter', () => {
-      optionHover = true;
-      avatarOptions.style.display = 'flex';
-    });
-    avatarOptions.addEventListener('mouseleave', () => {
-      optionHover = false;
-      avatarHover = false;
-      avatarOptions.style.display = 'none';
-    });
-
-    avatarOptions.addEventListener('mousedown', () => {
-      if (avatarOptions.style.display === 'flex'
-        && !avatarOptions.contains(e.target)
-        && e.target !== avatarBtn) {
-        avatarOptions.style.display = 'none';
-
-      }
-    });
-
+    avatarContainer.addEventListener('mouseenter', () => { avatarOptions.style.display = 'flex'; avatarHover = true; });
+    avatarContainer.addEventListener('mouseleave', () => { setTimeout(() => { if (!optionHover && !avatarHover) avatarOptions.style.display = 'none'; }, 50); });
+    avatarOptions.addEventListener('mouseenter', () => { optionHover = true; avatarOptions.style.display = 'flex'; });
+    avatarOptions.addEventListener('mouseleave', () => { optionHover = false; avatarHover = false; avatarOptions.style.display = 'none'; });
 
     function stopCamera() {
       if (cameraStream) {
-        let tracks = cameraStream.getTracks();
-        tracks.forEach(track => track.stop());
-        cameraPreview.style.display = 'none';
-        cameraStream = null;
-        senderAvatar.style.display = 'block'; // Show the avatar again
-        currentAvatar = '/avatar.avif'; // Reset to default avatar
-        senderAvatar.src = currentAvatar; // Update avatar image
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraPreview.style.display = 'none'; cameraStream = null;
+        senderAvatar.style.display = 'block';
+        currentAvatar = '/avatar.avif'; senderAvatar.src = currentAvatar;
       }
     }
 
     avatarChoices.forEach(choice => {
       choice.addEventListener('click', function () {
         if (currentAvatar === 'camera_live') stopCamera();
-
-        // Remove selected class from all
         avatarChoices.forEach(c => c.classList.remove('selected'));
-
-        // Mark this as selected
         this.classList.add('selected');
         const newAvatar = this.getAttribute('data-avatar');
-        currentAvatar = newAvatar;
-        senderAvatar.src = newAvatar;
+        currentAvatar = newAvatar; senderAvatar.src = newAvatar;
       });
     });
 
-    // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-    // # --------------------------------------------TYPING HANDLERS AND TYPING INDICATOR AND INPUT MESSAGES----------------------------------------------------------------
-
+    // ═══════════════════════════════════════════════════════════════
+    //  TYPING INDICATOR
+    // ═══════════════════════════════════════════════════════════════
     msgInput.addEventListener("keydown", function (event) {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        sendBtn.click();
-      }
+      if (event.key === "Enter") { event.preventDefault(); sendBtn.click(); }
     });
+
     msgInput.addEventListener('input', () => {
-      if (dataChannel && dataChannel.readyState === 'open') {
-        dataChannel.send('__typing__');
-      }
+      peer.send('__typing__');
       clearTimeout(typingTimeout);
-      typingTimeout = setTimeout(() => {
-        if (dataChannel && dataChannel.readyState === 'open') {
-          dataChannel.send('__stop_typing__');
-        }
-      }, 1500);
+      typingTimeout = setTimeout(() => { peer.send('__stop_typing__'); }, 1500);
     });
-
-    //---------------------------------------------------------------------------------------------------------------------------------------------------
-
-    // # --------------------------------------------TYPING INDICATOR LOGIC AND FUNCTIONS----------------------------------------------------------------
 
     function showTyping() {
       const typingEl = document.getElementById('loading');
@@ -1102,29 +825,22 @@
       if (typingEl) typingEl.style.display = 'none';
     }
 
-    //----------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-    // # --------------------------------------------SEEN LOGIC AND PAGE VISIBILITY HANDLING----------------------------------------------------------------
-
-    function isPageReallyVisible() {
-      return document.visibilityState === 'visible';
-    }
+    // ═══════════════════════════════════════════════════════════════
+    //  SEEN LOGIC
+    // ═══════════════════════════════════════════════════════════════
+    function isPageReallyVisible() { return document.visibilityState === 'visible'; }
     function isInView(el, container) {
       const rect = el.getBoundingClientRect();
       const parentRect = container.getBoundingClientRect();
       const visibleTop = Math.max(rect.top, parentRect.top);
       const visibleBottom = Math.min(rect.bottom, parentRect.bottom);
-      const visibleHeight = Math.max(0, visibleBottom - visibleTop);
-      return visibleHeight >= 0.8 * rect.height;
+      return Math.max(0, visibleBottom - visibleTop) >= 0.8 * rect.height;
     }
     function tryMarkUnseenVisibleMessages() {
       if (!isPageReallyVisible()) return;
       unseenPeerMsgIds.forEach(id => {
         const el = document.getElementById('msg-in-' + id);
-        if (el && isInView(el, messagesContainer)) {
-          sendSeenForMessage(id);
-        }
+        if (el && isInView(el, messagesContainer)) sendSeenForMessage(id);
       });
     }
 
@@ -1132,28 +848,20 @@
       entries.forEach(entry => {
         if (entry.isIntersecting && isPageReallyVisible()) {
           const id = entry.target.id.replace('msg-in-', '');
-          if (unseenPeerMsgIds.has(id)) {
-            sendSeenForMessage(id);
-          }
+          if (unseenPeerMsgIds.has(id)) sendSeenForMessage(id);
         }
       });
-    }, {
-      root: messagesContainer,
-      threshold: 0.8
-    });
+    }, { root: messagesContainer, threshold: 0.8 });
 
     document.addEventListener('visibilitychange', tryMarkUnseenVisibleMessages);
     messagesContainer.addEventListener('scroll', tryMarkUnseenVisibleMessages);
 
-
-
     function sendSeenForMessage(id) {
-      if (dataChannel && dataChannel.readyState === 'open') {
-        dataChannel.send(JSON.stringify({ type: 'seen', id: id }));
+      if (peer.isDataChannelOpen()) {
+        peer.send(JSON.stringify({ type: 'seen', id: id }));
         unseenPeerMsgIds.delete(id);
       }
     }
-
 
     function markMessageAsSeen(messageId) {
       var obj = myMessages[messageId];
@@ -1161,345 +869,134 @@
         obj.seen = true;
         var check = obj.element.querySelector('.seen-icon');
         if (check) {
-          check.innerHTML = `<dotlottie-wc
-        src="https://lottie.host/a3100caf-d968-4f2a-809c-d2a23630d6c6/rjOs1D7sNu.lottie"
-        style="width:40px;height:40px"
-        speed="1.4"
-        autoplay
-      ></dotlottie-wc>`;
+          check.innerHTML = `<dotlottie-wc src="https://lottie.host/a3100caf-d968-4f2a-809c-d2a23630d6c6/rjOs1D7sNu.lottie" style="width:40px;height:40px" speed="1.4" autoplay></dotlottie-wc>`;
           check.style.display = 'inline';
         }
         obj.element.classList.add('seen');
       }
     }
 
-
-    // -----------------------------------------------------------------------------------------------------------------------------------------------------
-
-    // ------------------------------------------------------------WEBRTC VIDEO AND AUDIO CALL HANDLING---------------------------------------------------
-    function showVideoUI() {
-      videoChatContainer.style.display = '';
-    }
+    // ═══════════════════════════════════════════════════════════════
+    //  VIDEO / AUDIO CALL UI
+    // ═══════════════════════════════════════════════════════════════
+    function showVideoUI() { videoChatContainer.style.display = ''; }
     function hideVideoUI() {
       videoChatContainer.style.display = 'none';
       document.getElementById('call-container').style.display = 'block';
       document.getElementById('video-container').style.display = 'block';
-
-      if (localVideo.srcObject) {
-        localVideo.srcObject.getTracks().forEach(track => track.stop());
-        localVideo.srcObject = null;
-      }
-      if (remoteVideo.srcObject) {
-        remoteVideo.srcObject.getTracks().forEach(track => track.stop());
-        remoteVideo.srcObject = null;
-      }
-      if (peerConnection) {
-        peerConnection.getSenders().forEach(sender => {
-          if (sender.track) peerConnection.removeTrack(sender);
-        });
-      }
-      localStream = null;
-      remoteStream = null;
+      if (localVideo.srcObject) { localVideo.srcObject.getTracks().forEach(track => track.stop()); localVideo.srcObject = null; }
+      if (remoteVideo.srcObject) { remoteVideo.srcObject.getTracks().forEach(track => track.stop()); remoteVideo.srcObject = null; }
+      peer.stopMedia();
     }
 
-    function showAudioUI() {
-      document.querySelector(".buttonforaudio").style.display = "flex";
-    }
+    function showAudioUI() { document.querySelector(".buttonforaudio").style.display = "flex"; }
 
     function stoppeercall() {
       disconnectBtnforaudio.style.display = 'none';
       videoChatContainer.style.display = 'none';
       document.getElementById('call-container').style.display = 'block';
       document.getElementById('video-container').style.display = 'block';
-      if (localVideo.srcObject) {
-        localVideo.srcObject.getTracks().forEach(track => track.stop());
-        localVideo.srcObject = null;
-      }
-      if (remoteVideo.srcObject) {
-        remoteVideo.srcObject.getTracks().forEach(track => track.stop());
-        remoteVideo.srcObject = null;
-      }
-      if (peerConnection) {
-        peerConnection.getSenders().forEach(sender => {
-          if (sender.track) peerConnection.removeTrack(sender);
-        });
-      }
-      localStream = null;
-      remoteStream = null;
+      if (localVideo.srcObject) { localVideo.srcObject.getTracks().forEach(track => track.stop()); localVideo.srcObject = null; }
+      if (remoteVideo.srcObject) { remoteVideo.srcObject.getTracks().forEach(track => track.stop()); remoteVideo.srcObject = null; }
+      peer.stopMedia();
     }
 
     async function startMedia(isVideo = true) {
       try {
-        if (!peerConnection) setupWebRTC();
-
-        // 2. Get local media if not already
-        if (!localStream) {
-          const constraints = isVideo
-            ? { video: true, audio: true }
-            : { video: false, audio: true };
-          localStream = await navigator.mediaDevices.getUserMedia(constraints);
-          if (isVideo) {
-            showVideoUI();
-            localVideo.srcObject = localStream;
-          } else {
-            showAudioUI();
-          }
-        }
-
-        // 3. Make sure tracks are added (avoid duplicates)
-        const existingTracks = peerConnection.getSenders().map(s => s.track && s.track.id);
-        localStream.getTracks().forEach(track => {
-          if (!existingTracks.includes(track.id)) {
-            peerConnection.addTrack(track, localStream);
-          }
-        });
-
-        // 4. If USER2 is initiator, proactively create DataChannel if doesn't exist
-        if (!dataChannel && role === 'user2') {
-          dataChannel = peerConnection.createDataChannel('chat');
-          bindDataChannel();
-        }
-
-        // 5. Create & send offer (only as initiator)
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        socket.emit('offer', { roomCode, sdp: peerConnection.localDescription });
-
+        const stream = await peer.startMedia(isVideo);
+        if (isVideo) { showVideoUI(); localVideo.srcObject = stream; }
+        else { showAudioUI(); }
       } catch (err) {
         console.error("Error starting call:", err);
         alert('Could not start call: ' + err.message);
       }
-
     }
 
     audioCallBtn.onclick = async function () {
       await startMedia(false);
-      if (dataChannel && dataChannel.readyState === 'open') {
+      if (peer.isDataChannelOpen()) {
         document.getElementById('video-container').style.display = 'none';
         document.getElementById('call-container').style.display = 'none';
-
-        const message = JSON.stringify({ type: 'call', callType: 'audio' });
-        dataChannel.send(message);
+        peer.send(JSON.stringify({ type: 'call', callType: 'audio' }));
       }
     };
 
-
-
     videoCallBtn.onclick = async function () {
       await startMedia(true);
-
-      if (dataChannel && dataChannel.readyState === 'open') {
+      if (peer.isDataChannelOpen()) {
         document.getElementById('call-container').style.display = 'none';
         document.getElementById('video-container').style.display = 'none';
-        const message = JSON.stringify({ type: 'call', callType: 'video' });
-        dataChannel.send(message);
+        peer.send(JSON.stringify({ type: 'call', callType: 'video' }));
       }
     };
 
     disconnectBtn.onclick = function () {
-      if (dataChannel && dataChannel.readyState === 'open') {
+      if (peer.isDataChannelOpen()) {
         document.getElementById('call-container').style.display = 'none';
         document.getElementById('video-container').style.display = 'none';
-        const message = JSON.stringify({ type: 'disconnect', callType: 'video' });
-        dataChannel.send(message);
-        hideVideoUI()
+        peer.send(JSON.stringify({ type: 'disconnect', callType: 'video' }));
+        hideVideoUI();
       }
     };
 
     disconnectBtnforaudio.onclick = function () {
       disconnectBtnforaudio.style.display = 'none';
-      if (dataChannel && dataChannel.readyState === 'open') {
+      if (peer.isDataChannelOpen()) {
         document.getElementById('call-container').style.display = 'none';
         document.getElementById('video-container').style.display = 'none';
-        const message = JSON.stringify({ type: 'disconnect', callType: 'video' });
-        dataChannel.send(message);
-        hideVideoUI()
+        peer.send(JSON.stringify({ type: 'disconnect', callType: 'video' }));
+        hideVideoUI();
       }
     };
 
     function handleRemoteTrack(event) {
-      if (!remoteStream) {
-        remoteStream = new MediaStream();
-        remoteVideo.srcObject = remoteStream;
+      if (!peer.remoteStream) {
+        peer.remoteStream = new MediaStream();
+        remoteVideo.srcObject = peer.remoteStream;
       }
       event.streams[0].getTracks().forEach(track => {
-        if (!remoteStream.getTracks().find(t => t.id === track.id)) {
-          remoteStream.addTrack(track);
+        if (!peer.remoteStream.getTracks().find(t => t.id === track.id)) {
+          peer.remoteStream.addTrack(track);
         }
       });
     }
-    // ------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-    // #----------------------------------------------------------------RECONNECTION HANDLING-------------------------------------------------------------
-
-    socket.on('disconnect', () => {
-      showStatus('Disconnected from server.', 'error');
-      disableChat();
-      hideVideoUI();
-
-      showReconnectToast(
-        `<i class="fa-solid fa-rotate-right"></i> Connection lost. Trying to reconnect... (0/${maxReconnectAttempts})`,
-        'info'
-      );
-      attemptReconnect();
-    });
-
-    function attemptReconnect() {
-      reconnectAttempts = 0;
-      if (reconnectTimer) clearInterval(reconnectTimer);
-
-      reconnectTimer = setInterval(() => {
-        reconnectAttempts++;
-        showReconnectToast(
-          `<i class="fa-solid fa-rotate-right"></i> Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`,
-          'info'
-        );
-
-        // ...emit reconnect attempt as before...
-
-        if (reconnectAttempts >= maxReconnectAttempts) {
-          clearInterval(reconnectTimer);
-          reconnectTimer = null;
-          showReconnectToast(
-            `<i class="fa-solid fa-triangle-exclamation"></i> Could not reconnect. Please reload.`,
-            'error'
-          );
-        }
-      }, reconnectIntervalMs);
-    }
-
-    socket.on('connect', () => {
-      if (reconnectTimer) {
-        onReconnectSuccess();
-      }
-    });
-
-    function onReconnectSuccess() {
-      if (reconnectTimer) {
-        clearInterval(reconnectTimer);
-        reconnectTimer = null;
-      }
-      reconnectAttempts = 0;
-      hideReconnectToast();
-      showStatus('Reconnected!', 'success');
-
-      // Re-register with the server using new socket ID BEFORE setting up WebRTC
-      socket.emit('rejoin-room', { roomCode, role });
-    }
-
-    //---------------------------------------------------------------------------------------------------------------------------------------------------
-
 
     function alertingpeer(callType) {
       const videoContainer = document.getElementById('video-container');
       const audioContainer = document.getElementById('call-container');
       if (callType === 'video' && videoContainer.checkVisibility()) {
-
-        showStatus('Incoming Video call! Click to answer.', 'info',)
+        showStatus('Incoming Video call! Click to answer.', 'info');
         document.getElementById('call-container').style.display = 'none';
       } else if (callType === 'audio' && audioContainer.checkVisibility()) {
-        showStatus('Incoming audio call! Click to answer.', 'info',)
+        showStatus('Incoming audio call! Click to answer.', 'info');
         document.getElementById('video-container').style.display = 'none';
       }
     }
 
-
-
-    // # --------------------------------------------REFRESH HANDLING AND RESTARTING WEBRTC-------------------------------------------------------------
-
-    if (window.performance) {
-      if (performance.navigation.type == performance.navigation.TYPE_RELOAD) {
-        socket.emit('rejoin-room', { roomCode, role });
-      }
-    }
-
-    socket.on('restart-webrtc', () => {
-      if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
-      }
-      dataChannel = null;
-      retryQueue = [];
-
-      enableChat();
-    });
-
-    // ------------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-    // #--------------------------------------------------------SOCKET.IO SIGNALING FOR OFFER, ANSWER, ICE CANDIDATE HANDLING-----------------------------------------------------
-
-    socket.on('offer', async ({ sdp }) => {
-      try {
-        if (!peerConnection) setupWebRTC();
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
-        socket.emit('answer', { roomCode, sdp: peerConnection.localDescription });
-      } catch (err) {
-        console.error('Error handling offer:', err);
-      }
-    });
-    socket.on('answer', async ({ sdp }) => {
-      try {
-        if (!peerConnection) return;
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
-      } catch (err) {
-        console.error('Error handling answer:', err);
-      }
-    });
-    socket.on('ice-candidate', ({ candidate }) => {
-      if (peerConnection && candidate) {
-        peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(err => {
-          console.error('Error adding ICE candidate:', err);
-        });
-      }
-    });
-
-    // ------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-    // # -----------------------------------------OTHER HELPER FUNCTION AND SMALL LOGIC AND HANDLERS-------------------------------------------------------------------------
-
-    // # for the peer when clicks leave button
+    // ═══════════════════════════════════════════════════════════════
+    //  LEAVE ROOM
+    // ═══════════════════════════════════════════════════════════════
     function submitForm() {
-      socket.emit('leave-room', roomCode);
-      if (peerConnection) peerConnection.close();
+      signaling.leave();
+      peer.cleanup();
       window.location.replace("/index.html");
     }
 
-    // # for the peer when the other peer leaves
-    socket.on('peer-left', () => {
-      if (peerConnection) peerConnection.close();
-      showStatus('Peer has left the room. You Will be redirected to home page', 'info');
-      setTimeout(() => {
-        window.location.replace("/index.html");
-      }, 5000);
-    })
-
-    // Socket.io signaling same as before
-
-    // TOAST NOTIFICATION AND STATUS HANDLING
+    // ═══════════════════════════════════════════════════════════════
+    //  STATUS TOASTS
+    // ═══════════════════════════════════════════════════════════════
     function showStatus(message, type) {
       const statusContainer = document.getElementById('status-messages');
       const statusDiv = document.createElement('div');
       statusDiv.className = `status ${type}`;
       statusDiv.textContent = message;
-
       statusContainer.appendChild(statusDiv);
-
-      setTimeout(() => {
-        statusDiv.remove();
-      }, 5000);
+      setTimeout(() => { statusDiv.remove(); }, 5000);
     }
 
-
-    // # RECONNECT TOAST HANDLING
     function showReconnectToast(message, type = 'info') {
       let id = 'reconnect-toast';
       let toast = document.getElementById(id);
-
       if (!toast) {
         toast = document.createElement('div');
         toast.id = id;
@@ -1515,8 +1012,9 @@
       if (toast) toast.remove();
     }
 
-
-    // # DRAG AND DROP VIDEO CHAT CONTAINER
+    // ═══════════════════════════════════════════════════════════════
+    //  DRAG VIDEO CONTAINER
+    // ═══════════════════════════════════════════════════════════════
     let offsetX, offsetY;
     function startDrag(e) {
       offsetX = e.clientX - videoChatContainer.getBoundingClientRect().left;
@@ -1524,114 +1022,37 @@
       document.addEventListener('mousemove', drag);
       document.addEventListener('mouseup', endDrag);
     }
-
     function drag(e) {
       videoChatContainer.style.left = `${e.clientX - offsetX}px`;
       videoChatContainer.style.top = `${e.clientY - offsetY}px`;
     }
-
     function endDrag() {
       document.removeEventListener('mousemove', drag);
       document.removeEventListener('mouseup', endDrag);
     }
-
     videoChatContainer.addEventListener('mousedown', startDrag);
 
-
-    // ----------------------------------------------------------------------------------------------------------------------------------------------
-
-    //----------------------------------------------------------------------# Handle ONLINE/OFFLINE----------------------------------------------------------------
-
-
-    function attemptReconnectforInternet() {
-      reconnectAttempts = 0;
-      if (reconnectTimer) clearInterval(reconnectTimer);
-
-      reconnectTimer = setInterval(() => {
-        reconnectAttempts++;
-
-        // show toast while offline
-        if (!navigator.onLine) {
-          showReconnectToast(
-            `<i class="fa-solid fa-wifi"></i> Waiting for internet...`,
-            'error'
-          );
-          return; // skip socket attempts until online
-        }
-
-
-
-        if (!socket.connected) {
-          socket.connect();
-        }
-
-        if (socket.connected) {
-          restartWebRTC();
-          clearInterval(reconnectTimer);
-          reconnectTimer = null;
-          return;
-        }
-
-        // only stop retrying if online but still can't reconnect
-        if (reconnectAttempts >= maxReconnectAttempts) {
-          clearInterval(reconnectTimer);
-          reconnectTimer = null;
-          showReconnectToast(
-            `<i class="fa-solid fa-triangle-exclamation"></i> Could not reconnect. Please reload.`,
-            'error'
-          );
-        }
-      }, reconnectIntervalMs);
-    }
-
-
-    // helper to fully restart peer connection
-    function restartWebRTC() {
-      try {
-        if (peerConnection) {
-          peerConnection.close();
-          peerConnection = null;
-        }
-        dataChannel = null;
-        retryQueue = [];
-
-        // Re-register with server first, then enableChat (which calls setupWebRTC)
-        socket.emit('rejoin-room', { roomCode, role });
-
-        showStatus("🔄 Re-establishing peer connection...", "info");
-      } catch (err) {
-        console.error("Error restarting WebRTC:", err);
-      }
-    }
-
-
-
-
+    // ═══════════════════════════════════════════════════════════════
+    //  ONLINE / OFFLINE HANDLING
+    // ═══════════════════════════════════════════════════════════════
     function handleOffline() {
       disableChat();
       showStatus("⚠️ You are offline. Waiting for internet...", "error");
-
-      // notify peer if possible
-      if (dataChannel && dataChannel.readyState === 'open') {
-        dataChannel.send(JSON.stringify({ type: "peer-offline" }));
+      if (peer.isDataChannelOpen()) {
+        peer.send(JSON.stringify({ type: "peer-offline" }));
       }
     }
 
-    // enable chat again + notify peer
     function handleOnline() {
       showStatus("✅ Internet reconnected. Restoring chat...", "success");
-      enableChat();
-      attemptReconnectforInternet();
-
-      if (dataChannel && dataChannel.readyState === 'open') {
-        dataChannel.send(JSON.stringify({ type: "peer-online" }));
+      if (peer.isDataChannelOpen()) {
+        peer.send(JSON.stringify({ type: "peer-online" }));
       }
+      // Socket.io auto-reconnect will handle the rest
     }
 
     window.addEventListener("offline", handleOffline);
     window.addEventListener("online", handleOnline);
-
-
 
   </script>
 
@@ -1639,3 +1060,1395 @@
 </body>
 
 </html>
+
+
+el: "#vanta-canvas",
+mouseControls: true,
+touchControls: true,
+gyroControls: false,
+minHeight: 200.00,
+minWidth: 200.00,
+scale: 1.00,
+scaleMobile: 1.00,
+color: 0x151515,
+zoom: 0.78
+});
+
+// DOM elements
+const msgInput = document.getElementById('msgInput');
+const sendBtn = document.getElementById('sendBtn');
+const messagesContainer = document.querySelector('.message-container');
+const waitingEl = document.getElementById('waiting-message');
+const videoCallBtn = document.getElementById('connect-button');
+const audioCallBtn = document.getElementById('call');
+const videoChatContainer = document.getElementById('video-chat-container');
+const localVideo = document.getElementById('local-video');
+const remoteVideo = document.getElementById('remote-video');
+const disconnectBtn = document.getElementById('disconnectButton');
+const disconnectBtnforaudio = document.getElementById('disconnectButtonforaudio');
+const avatarContainer = document.getElementById('user-avatar-select');
+const emojibtn = document.getElementById('emoji-button');
+const client = new WebTorrent();
+const uploadInput = document.getElementById('uploadFile');
+let peerConnection, dataChannel;
+let localStream = null;
+let remoteStream = null;
+const cameraBtn = document.getElementById('cameraAvatarBtn');
+const cameraPreview = document.getElementById('cameraPreview');
+let cameraStream = null;
+const params = new URLSearchParams(window.location.search);
+const roomCode = sessionStorage.getItem('roomCode');
+const role = sessionStorage.getItem('myRole');
+const customAvatarInput = document.getElementById('customAvatarInput');
+const viewMoreBtn = document.getElementById('viewMoreAvatars');
+const avatarDialog = document.getElementById('avatarDialog');
+const avatarGrid = avatarDialog.querySelector('.avatar-grid');
+const closeDialog = avatarDialog.querySelector('.close-avatar-dialog');
+let peerAvatar = 'avatars/avatar0.avif';
+let currentAvatar = 'avatars/avatar0.avif';
+const senderAvatar = document.getElementById('senderAvatar');
+const avatarChoices = document.querySelectorAll('.avatar-choice');
+const myMessages = {}; //
+const unseenPeerMsgIds = new Set();
+let typingTimeout;
+const shareFileBtn = document.getElementById('shareFileBtn');
+let retryQueue = [];
+let retryInterval = null;
+let reconnectAttempts = 0;
+let maxReconnectAttempts = 20;
+let reconnectIntervalMs = 2000;
+let reconnectTimer = null;
+let hasEverConnected = false; // declare this once at top of your script
+
+
+
+
+//# --------------------------------------------FUNCTION FOR EMOJI
+HANDLERS----------------------------------------------------------------------------
+window.addEventListener('DOMContentLoaded', () => {
+const emojiBtn = document.getElementById('emoji-button');
+let emojiPicker = document.getElementById('custom-emoji-picker');
+const msgInput = document.getElementById('msgInput');
+
+// Move picker to body to avoid overflow clipping
+document.body.appendChild(emojiPicker);
+
+emojiBtn.addEventListener('click', (e) => {
+e.stopPropagation();
+
+const pickerVisible = emojiPicker.style.display === 'block';
+if (pickerVisible) {
+emojiPicker.style.display = 'none';
+return;
+}
+
+emojiPicker.style.display = 'block';
+
+const rect = emojiBtn.getBoundingClientRect();
+const pickerHeight = 280; // matches your CSS height
+const pickerWidth = 260;
+
+// Default position: below button
+let top = rect.bottom + window.scrollY + 8;
+let left = rect.left + window.scrollX;
+
+// If not enough space below, show above
+if (window.innerHeight - rect.bottom < pickerHeight) { top=rect.top + window.scrollY - pickerHeight - 8; } // If picker
+  goes out of right boundary, shift left if (left + pickerWidth> window.innerWidth) {
+  left = window.innerWidth - pickerWidth - 8;
+  }
+
+  emojiPicker.style.position = 'absolute';
+  emojiPicker.style.left = left + 'px';
+  emojiPicker.style.top = top + 'px';
+  emojiPicker.style.zIndex = 99999;
+  });
+
+  // Insert emoji into input
+  emojiPicker.addEventListener('emoji-click', event => {
+  const emoji = event.detail.unicode;
+  const start = msgInput.selectionStart;
+  const end = msgInput.selectionEnd;
+  const value = msgInput.value;
+  msgInput.value = value.slice(0, start) + emoji + value.slice(end);
+  msgInput.setSelectionRange(start + emoji.length, start + emoji.length);
+  msgInput.focus();
+  emojiPicker.style.display = 'none';
+  });
+
+  // Hide when clicking anywhere outside
+  document.addEventListener('click', (e) => {
+  if (!emojiPicker.contains(e.target) && e.target !== emojiBtn) {
+  emojiPicker.style.display = 'none';
+  }
+  });
+  });
+
+  //
+  ---------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+  sendBtn.onclick = sendmsg;
+  shareFileBtn.onclick = () => uploadInput.click();
+
+
+  const socket = io({
+  reconnection: true,
+  reconnectionAttempts: 10, // retry 10 times
+  reconnectionDelay: 2000, // wait 2s between retries
+  reconnectionDelayMax: 5000,
+  });
+  ;
+
+  if (!roomCode || !role) {
+  alert('Room or role missing!');
+  location.href = '/';
+  }
+
+
+  // # -----------------------------------------------------------FOR HANDLING THE PAGE CLOSING OR
+  REFRESHING-------------------------------------------------------------
+  window.addEventListener("beforeunload", function (event) {
+  //socket.emit('leave-room', roomCode);
+  event.preventDefault();
+  event.returnValue = "";
+  });
+
+
+  window.addEventListener("pageshow", function (event) {
+  if (event.persisted || (window.performance && window.performance.navigation.type === 2)) {
+  window.location.replace("/");
+  }
+  });
+
+  //------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+  // # --------------------------------------INITIAL ROOM CREATION AND JOINING THE ROOM RESPECTIVE OF THEIR
+  ROLE-----------------------------------------------------------
+
+  // start-chat listener is GLOBAL so both user1 and user2 receive it (especially during reconnection)
+  socket.on('start-chat', data => {
+  enableChat();
+  hasEverConnected = true;
+  showStatus('Peer has joined the chat!', 'success');
+  });
+
+  if (role === 'user1') {
+  socket.emit('create-room', roomCode, resp => {
+  if (!resp.success) {
+  alert(resp.msg || 'Could not create room.');
+  location.href = '/';
+  return;
+  }
+  });
+  } else if (role === 'user2') {
+  socket.emit('join-room', roomCode, resp => {
+  if (!resp.success) {
+  alert(resp.msg || 'Could not join room.');
+  location.href = '/';
+  return;
+  }
+  enableChat();
+  showStatus('You have joined the chat!', 'success');
+  });
+  }
+
+  //-----------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+  // # ------------------------------------------------ENABLE CHAT INPUT AND BUTTONS AND HELPER
+  FUNCTIONS----------------------------------------------
+  function enableChat() {
+  waitingEl.style.display = 'none';
+  msgInput.disabled = false;
+  sendBtn.disabled = false;
+  msgInput.focus();
+  setupWebRTC();
+  }
+
+  function disableChat() {
+  waitingEl.style.display = '';
+  msgInput.disabled = true;
+  sendBtn.disabled = true;
+  }
+
+  disableChat();
+
+
+
+  // # --------------------------------------------------SETUP THE WEBRTC
+  CONNECTION----------------------------------------------------------------
+  function setupWebRTC() {
+  if (peerConnection) {
+  return;
+  };
+  peerConnection = new RTCPeerConnection({
+  iceServers: [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  {
+  urls: 'turn:openrelay.metered.ca:80',
+  username: 'openrelayproject',
+  credential: 'openrelayproject'
+  },
+  {
+  urls: 'turn:openrelay.metered.ca:443',
+  username: 'openrelayproject',
+  credential: 'openrelayproject'
+  },
+  {
+  urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+  username: 'openrelayproject',
+  credential: 'openrelayproject'
+  }
+  ],
+  iceCandidatePoolSize: 10
+  });
+
+  peerConnection.oniceconnectionstatechange = () => {
+  const state = peerConnection.iceConnectionState;
+  console.log("ICE state:", state);
+
+  if (state === "disconnected" || state === "failed") {
+  showStatus("⚠️ Peer connection lost. Trying to recover...", "error");
+  restartWebRTC();
+  }
+  if (state === "connected") {
+  if (!hasEverConnected) {
+  showStatus("✅ Peer connected!", "success");
+  hasEverConnected = true;
+  } else {
+  showStatus("✅ Peer reconnected!", "success");
+  }
+  }
+  };
+
+
+  peerConnection.onicecandidate = (event) => {
+  if (event.candidate) {
+  socket.emit('ice-candidate', { roomCode, candidate: event.candidate });
+  }
+  };
+  peerConnection.ontrack = handleRemoteTrack;
+
+  if (role === 'user1') {
+  dataChannel = peerConnection.createDataChannel('chat');
+  bindDataChannel();
+  peerConnection.createOffer()
+  .then(offer => peerConnection.setLocalDescription(offer))
+  .then(() => {
+  socket.emit('offer', { roomCode, sdp: peerConnection.localDescription });
+  });
+  } else {
+  peerConnection.ondatachannel = (event) => {
+  dataChannel = event.channel;
+  bindDataChannel();
+  }
+  }
+  }
+
+  //-----------------------------------------------------------------------------------------------------------------------------------------------
+
+
+  // # ---------------------------------MAIN FUNCTION TO SEND MESSAGE FROM PEER TO
+  PEER--------------------------------------------------------------
+
+  function bindDataChannel() {
+  if (!dataChannel) return;
+  dataChannel.onopen = () => {
+  if (role === 'user2') msgInput.focus();
+
+  // ---- RETRY QUEUED MESSAGES ON DATA CHANNEL OPEN ----
+  while (retryQueue.length > 0 && dataChannel && dataChannel.readyState === 'open') {
+  dataChannel.send(retryQueue.shift());
+  dataChannel.send('__stop_typing__');
+  }
+  // If you use a retryInterval timer, clear it if queue is empty
+  if (retryQueue.length === 0 && retryInterval) {
+  clearInterval(retryInterval);
+  retryInterval = null;
+  }
+  };
+  dataChannel.onmessage = e => {
+  try {
+  var msgData = JSON.parse(e.data);
+  if (msgData.type === 'disconnect') {
+  showStatus('Peer has disconnected.', 'info');
+  stoppeercall();
+  }
+  if (msgData.type === 'call') {
+  alertingpeer(msgData.callType);
+  }
+  if (msgData.type === 'file' && msgData.magnet) {
+  showReceivedFile(msgData.name, msgData.magnet, msgData.avatar, msgData.id);
+  }
+  if (msgData.type === 'chat') {
+  appendPeerMsg(msgData.text, msgData.id, msgData.avatar || '/avatar1.avif');
+  hideTyping();
+  }
+  else if (msgData.type === 'seen') {
+  markMessageAsSeen(msgData.id);
+  }
+  if (msgData.type === "peer-offline") {
+  disableChat();
+  showStatus("⚠️ Peer lost internet. Please wait...", "info");
+  } if (msgData.type === "peer-online") {
+  enableChat();
+  showStatus("✅ Peer is back online!", "success");
+  }
+
+  }
+  catch {
+  if (e.data === '__typing__') {
+  showTyping();
+  }
+  else if (e.data === '__stop_typing__') {
+  hideTyping();
+  }
+  else {
+  appendPeerMsg(e.data); // fallback
+  hideTyping();
+  }
+  }
+  };
+  dataChannel.onerror = e => {
+  showStatus('Data channel error: ' + e.message, 'error');
+  };
+  dataChannel.onclose = () => {
+  showStatus('Peer connection closed.', 'info');
+  }
+  }
+
+  // # ------------------------------------------HELPER FUNCTION TO APPEND PEER MESSAGE AND USER OWN
+  MESSAGES----------------------------------------
+
+
+  function sendmsg() {
+  var messageInput = document.getElementById('msgInput');
+  var messageText = messageInput.value;
+  if (messageText.trim() !== '') {
+  var messageId = Date.now().toString() + Math.random().toString(16).slice(2);
+  let avatarToSend = currentAvatar;
+  let snapshotData = null;
+  if (currentAvatar === 'camera_live') {
+  snapshotData = getCameraSnapshot();
+  avatarToSend = snapshotData || '/avatar.avif';
+  }
+  let encryptedtext = CryptoJS.AES.encrypt(messageText, roomCode).toString();
+  console.log('Encrypted message:', encryptedtext);
+  var messageObj = JSON.stringify({
+  type: 'chat',
+  id: messageId,
+  text: encryptedtext,
+  avatar: avatarToSend // this will be the camera snapshot if live camera active
+  });
+
+  // UI feedback in all cases: show message immediately as pending
+  var newMessage = document.createElement('div');
+  newMessage.classList.add('message', 'sender-message');
+  newMessage.id = 'msg-' + messageId;
+  newMessage.innerHTML = `<img src="${avatarToSend}" alt="Sender Avatar" class="avatar">
+  <span>${messageText}</span>
+  <span class="plane-icon" title="Sent, not seen yet" style="margin-left:6px;vertical-align:middle;">
+    <dotlottie-wc src="https://lottie.host/dbbd388f-f27a-4e67-ad9b-c38286d2d291/x6rAlcZWDe.lottie"
+      style="width: 42px;height: 40px" speed="1" autoplay loop></dotlottie-wc>
+  </span>
+  <span class="seen-icon" style="display:none;margin-left:6px;vertical-align:middle;" title="Seen"><dotlottie-wc
+      src="https://lottie.host/a3100caf-d968-4f2a-809c-d2a23630d6c6/rjOs1D7sNu.lottie" style="width: 40px;height: 40px"
+      speed="1.4"></dotlottie-wc></span>`;
+  messagesContainer.appendChild(newMessage);
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  myMessages[messageId] = { element: newMessage, seen: false };
+
+  // Core retry-enabled send logic
+  function actuallySend() {
+  if (dataChannel && dataChannel.readyState === 'open') {
+  dataChannel.send(messageObj);
+  dataChannel.send('__stop_typing__');
+  return true;
+  } else {
+  return false;
+  }
+  }
+
+  if (!actuallySend()) {
+  // Data channel is NOT open — queue for retry
+  retryQueue.push(messageObj);
+
+  if (!retryInterval) {
+  retryInterval = setInterval(() => {
+  while (retryQueue.length > 0 && dataChannel && dataChannel.readyState === 'open') {
+  dataChannel.send(retryQueue.shift());
+  dataChannel.send('__stop_typing__');
+  }
+  if (retryQueue.length === 0) {
+  clearInterval(retryInterval);
+  retryInterval = null;
+  }
+  }, 2000); // Check every 2 seconds
+  }
+  }
+  }
+  messageInput.value = '';
+  }
+
+
+
+  function appendPeerMsg(text, id, avatar = '/avatar1.avif') {
+  console.log('Received message:', text)
+  peerAvatar = avatar;
+  let decryptedtext = CryptoJS.AES.decrypt(text, roomCode).toString(CryptoJS.enc.Utf8);
+  var newMessage = document.createElement('div');
+  newMessage.classList.add('message', 'receiver-message');
+  newMessage.id = 'msg-in-' + id;
+  newMessage.innerHTML = `<img src="${avatar}" alt="Sender Avatar" class="avatar">${decryptedtext}`;
+  messagesContainer.appendChild(newMessage);
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+  if (id) {
+  unseenPeerMsgIds.add(id);
+  messageSeenObserver.observe(newMessage);
+  setTimeout(tryMarkUnseenVisibleMessages, 0);
+  }
+  }
+
+  //
+  ----------------------------------------------------------------------------------------------------------------------------------------------
+
+
+  // # -------------------------------------------------------- FUNCTIONS FOR FILE HANDLING AND
+  SENDING--------------------------------------------------------------------
+
+  function showSenderFilePreview(name, avatar, tmpId) {
+  const container = messagesContainer; // Use your normal chat message container
+
+  // Optionally shorten the file name
+  function shortenFileName(name, maxChars = 18) {
+  return name.length > maxChars ? name.slice(0, maxChars) + '...' : name;
+  }
+  const displayName = shortenFileName(name);
+
+  // Build the sender bubble with avatar and file details
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'message sender-message';
+  msgDiv.id = 'msg-pending-file-' + tmpId;
+
+  msgDiv.innerHTML = `
+  <span class="avatar-progress-container" style="position:relative;display:inline-block;">
+    <img src="${avatar}" alt="Sender Avatar" class="avatar">
+    <svg class="avatar-progress-ring" width="36" height="36"
+      style="position:absolute;top:-3px;left:-3px;pointer-events:none;z-index:1;">
+      <circle class="progress-ring__circle" stroke="#00ff6a" stroke-width="3" fill="transparent" r="16" cx="18"
+        cy="18" />
+    </svg>
+  </span>
+  <span><i class="fa-solid fa-file-arrow-up" style="color:#00ff6a;font-size:17px;vertical-align:middle;"></i></span>
+  <span class="file-name" style="margin-right:8px;">${displayName}</span>
+  <span class="file-progress"></span>
+  <span class="seen-icon" style="display:none;margin-left:6px;vertical-align:middle;" title="Seen"><dotlottie-wc
+      src="https://lottie.host/a3100caf-d968-4f2a-809c-d2a23630d6c6/rjOs1D7sNu.lottie" style="width: 40px;height: 40px"
+      speed="1.4"></dotlottie-wc></span>
+  `;
+  container.appendChild(msgDiv);
+  container.scrollTop = container.scrollHeight;
+  return msgDiv;
+  }
+
+  uploadInput.addEventListener('change', function () {
+  const file = this.files[0];
+  if (!file) return;
+  const tmpId = Date.now();
+  let avatarToSend = currentAvatar;
+  let snapshotData = null;
+  if (currentAvatar === 'camera_live') {
+  snapshotData = getCameraSnapshot();
+  avatarToSend = snapshotData || '/avatar.avif';
+  }
+
+
+  // Show the file preview in sender's chat
+  const previewDiv = showSenderFilePreview(file.name, avatarToSend, tmpId);
+  const progressEl = previewDiv.querySelector('.file-progress');
+  const circle = previewDiv.querySelector('.progress-ring__circle');
+  const radius = 16, circumference = 2 * Math.PI * radius;
+  circle.style.strokeDasharray = `${circumference}`;
+  circle.style.strokeDashoffset = circumference;
+  function setProgress(percent) {
+  const offset = circumference - (percent / 100) * circumference;
+  circle.style.strokeDashoffset = offset;
+  }
+
+  client.seed(file, torrent => {
+  // Progress feedback
+
+  // Once seeding started, show sent message and notify peer
+  if (dataChannel && dataChannel.readyState === 'open') {
+  const fileMsg = JSON.stringify({
+  type: 'file',
+  name: file.name,
+  magnet: torrent.magnetURI,
+  avatar: avatarToSend,
+  id: tmpId // can use the same tmpId for reference
+  });
+  dataChannel.send(fileMsg);
+
+  // (Optional) Mark as sent UI-wise
+  progressEl.textContent = ""; // Clear progress
+  setProgress(100);
+  setTimeout(() => {
+  circle.style.opacity = 0;
+  }, 600);
+  } else {
+  progressEl.textContent = '❗ Data channel not open!';
+  }
+  });
+  });
+
+
+
+
+
+  function setProgress(percent) {
+  const offset = circumference - (percent / 100) * circumference;
+  circle.style.strokeDashoffset = offset;
+  }
+
+  function showReceivedFile(name, magnet, avatar, id) {
+  const container = messagesContainer;
+  //const displayName = shortenFileName(name);
+  const shortenedName = name.length > 10 ? name.slice(0, 7) + '...' : name;
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'message receiver-message';
+  msgDiv.id = 'msg-in-file-' + (id || Date.now());
+
+  msgDiv.innerHTML = `
+  <span class="avatar-progress-container" style="position:relative;display:inline-block;">
+    <img src="${avatar}" alt="Sender Avatar" class="avatar">
+    <svg class="avatar-progress-ring" width="36" height="36"
+      style="position:absolute;top:-3px;left:-3px;pointer-events:none;z-index:1;">
+      <circle class="progress-ring__circle" stroke="#00ff6a" stroke-width="3" fill="transparent" r="16" cx="18" cy="18"
+        style="transition: stroke-dasharray 0.15s;" />
+    </svg>
+  </span>
+  <span><i class="fa-solid fa-file-arrow-down" style="color:#00ff6a;font-size:17px;vertical-align:middle;"></i></span>
+  <span style="margin-right:8px" title="${name}">${shortenedName}</span>
+  <button class="shared-file-download" style="margin-right:8px;">Download</button>
+  <span class="file-progress"></span>
+  <span class="plane-icon" title="Sent, not seen yet" style="margin-left:6px;vertical-align:middle;"></span>
+  <span class="seen-icon" style="display:none;margin-left:6px;vertical-align:middle;title=" Seen"><dotlottie-wc
+      src="https://lottie.host/a3100caf-d968-4f2a-809c-d2a23630d6c6/rjOs1D7sNu.lottie" style="width: 40px;height: 40px"
+      speed="1.4"></dotlottie-wc></span>
+  `;
+
+  const svgRing = msgDiv.querySelector('.avatar-progress-ring');
+  const circle = msgDiv.querySelector('.progress-ring__circle');
+  const radius = 16;
+  const circumference = 2 * Math.PI * radius;
+
+  circle.style.strokeDasharray = `${circumference} ${circumference}`;
+  circle.style.strokeDashoffset = circumference;
+
+  const setProgress = (percent) => {
+  const offset = circumference - (percent / 100) * circumference;
+  circle.style.strokeDashoffset = offset;
+  };
+
+  const downloadBtn = msgDiv.querySelector('.shared-file-download');
+  const progressEl = msgDiv.querySelector('.file-progress');
+
+  downloadBtn.onclick = function () {
+  downloadBtn.disabled = true;
+  progressEl.textContent = "Downloading...";
+  downloadBtn.style.display = 'none'; // Optionally hide download button
+  setProgress(0);
+
+  client.add(magnet, torrent => {
+  let fileBlobURL = null;
+  torrent.on('download', () => {
+  const percent = ((torrent.downloaded / torrent.length) * 100);
+  setProgress(percent);
+  });
+
+  torrent.on('done', () => {
+  progressEl.textContent = "Downloaded!";
+  torrent.files.forEach(file => {
+  file.getBlob((err, blob) => {
+  if (err) {
+  progressEl.textContent = "Error downloading file";
+  return console.error(err);
+  }
+  // Create a temporary URL & store it
+  fileBlobURL = URL.createObjectURL(blob);
+
+  // Auto-download once
+  const a = document.createElement('a');
+  a.style.display = "none";
+  a.href = fileBlobURL;
+  a.download = file.name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // DON'T revoke the Blob URL yet
+
+  downloadBtn.style.display = ''; // Optionally hide download button
+  downloadBtn.disabled = false;
+  downloadBtn.textContent = "Download Again";
+  downloadBtn.onclick = function () {
+  // Re-download
+  const a2 = document.createElement('a');
+  a2.style.display = "none";
+  a2.href = fileBlobURL;
+  a2.download = file.name;
+  document.body.appendChild(a2);
+  a2.click();
+  a2.remove();
+  };
+  });
+  });
+  });
+  });
+
+  };
+
+  container.appendChild(msgDiv);
+  container.scrollTop = container.scrollHeight;
+  }
+
+  //
+  ------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+  // # --------------------------------- FUNCTIONS FOR CAMERA AVATAR SELECTION AND HANDLING
+  -------------------------------------------------------------
+
+
+  cameraBtn.addEventListener('click', async function () {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+  alert('Camera not supported!');
+  return;
+  }
+  try {
+  cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+  cameraPreview.srcObject = cameraStream;
+  cameraPreview.style.display = 'block';
+  senderAvatar.style.display = 'none'; // Clear the avatar image
+  // Set as selected avatar visually
+  document.querySelectorAll('.avatar-choice').forEach(a => a.classList.remove('selected'));
+  cameraBtn.classList.add('selected');
+  // Set currentAvatar to special value
+  currentAvatar = 'camera_live';
+  senderAvatar.src = ''; // You can set a placeholder, or leave blank
+  } catch (err) {
+  alert('Unable to access camera: ' + err.message);
+  }
+  });
+
+  function getCameraSnapshot() {
+  if (!cameraPreview.srcObject) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = cameraPreview.videoWidth;
+  canvas.height = cameraPreview.videoHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(cameraPreview, 0, 0, canvas.width, canvas.height);
+  // Use 'image/jpeg' and specify a lower quality such as 0.5 (range: 0–1)
+  return canvas.toDataURL('image/jpeg', 0.5);
+  }
+
+  const avatarImages = [];
+  for (let i = 0; i < 16; i++) { avatarImages.push(`/avatars/avatar${i}.avif`); } viewMoreBtn.addEventListener('click',
+    function () { // Clear and fill avatars in grid avatarGrid.innerHTML='' ; for (let i=0; i < 16; i++) { const
+    img=document.createElement('img'); img.className='avatar-choice' ; img.tabIndex=0; if (avatarImages[i]) {
+    img.src=avatarImages[i]; img.dataset.avatar=avatarImages[i]; img.addEventListener('click', function () { // Select
+    avatar logic currentAvatar=this.dataset.avatar; senderAvatar.src=this.dataset.avatar; // visually reflect selection
+    document.querySelectorAll('.avatar-choice').forEach(a=> a.classList.remove('selected'));
+    this.classList.add('selected');
+    avatarDialog.style.display = 'none';
+    });
+    } else {
+    // empty slot for less than 16 avatars
+    img.style.opacity = '0';
+    img.style.pointerEvents = 'none';
+    }
+    // Mark selected
+    if (avatarImages[i] === currentAvatar) img.classList.add('selected');
+    avatarGrid.appendChild(img);
+    }
+    avatarDialog.style.display = 'flex';
+    });
+    closeDialog.onclick = () => avatarDialog.style.display = 'none';
+
+    // Optional: close when clicking outside modal
+    avatarDialog.onclick = function (e) {
+    if (e.target === avatarDialog) avatarDialog.style.display = 'none';
+    };
+
+    // When the input (file selector) changes
+    customAvatarInput.addEventListener('change', function () {
+    const file = this.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function (e) {
+    // Set currentAvatar to the encoded image
+    currentAvatar = e.target.result;
+    senderAvatar.src = currentAvatar;
+
+    // Optionally highlight the custom avatar visually
+    const avatarChoices = document.querySelectorAll('.avatar-choice');
+    avatarChoices.forEach(choice => choice.classList.remove('selected'));
+    // This input is inside a .avatar-choice label
+    customAvatarInput.parentElement.classList.add('selected');
+    };
+    reader.readAsDataURL(file);
+    });
+
+
+    const avatarOptions = document.getElementById('avatarOptions');
+
+    let optionHover = false, avatarHover = false;
+
+    avatarContainer.addEventListener('mouseenter', () => {
+    avatarOptions.style.display = 'flex';
+    avatarHover = true;
+    });
+    avatarContainer.addEventListener('mouseleave', () => {
+    setTimeout(() => {
+    if (!optionHover && !avatarHover) avatarOptions.style.display = 'none';
+    }, 50);
+    });
+    avatarOptions.addEventListener('mouseenter', () => {
+    optionHover = true;
+    avatarOptions.style.display = 'flex';
+    });
+    avatarOptions.addEventListener('mouseleave', () => {
+    optionHover = false;
+    avatarHover = false;
+    avatarOptions.style.display = 'none';
+    });
+
+    avatarOptions.addEventListener('mousedown', () => {
+    if (avatarOptions.style.display === 'flex'
+    && !avatarOptions.contains(e.target)
+    && e.target !== avatarBtn) {
+    avatarOptions.style.display = 'none';
+
+    }
+    });
+
+
+    function stopCamera() {
+    if (cameraStream) {
+    let tracks = cameraStream.getTracks();
+    tracks.forEach(track => track.stop());
+    cameraPreview.style.display = 'none';
+    cameraStream = null;
+    senderAvatar.style.display = 'block'; // Show the avatar again
+    currentAvatar = '/avatar.avif'; // Reset to default avatar
+    senderAvatar.src = currentAvatar; // Update avatar image
+    }
+    }
+
+    avatarChoices.forEach(choice => {
+    choice.addEventListener('click', function () {
+    if (currentAvatar === 'camera_live') stopCamera();
+
+    // Remove selected class from all
+    avatarChoices.forEach(c => c.classList.remove('selected'));
+
+    // Mark this as selected
+    this.classList.add('selected');
+    const newAvatar = this.getAttribute('data-avatar');
+    currentAvatar = newAvatar;
+    senderAvatar.src = newAvatar;
+    });
+    });
+
+    //
+    -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+    // # --------------------------------------------TYPING HANDLERS AND TYPING INDICATOR AND INPUT
+    MESSAGES----------------------------------------------------------------
+
+    msgInput.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+    event.preventDefault();
+    sendBtn.click();
+    }
+    });
+    msgInput.addEventListener('input', () => {
+    if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send('__typing__');
+    }
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => {
+    if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send('__stop_typing__');
+    }
+    }, 1500);
+    });
+
+    //---------------------------------------------------------------------------------------------------------------------------------------------------
+
+    // # --------------------------------------------TYPING INDICATOR LOGIC AND
+    FUNCTIONS----------------------------------------------------------------
+
+    function showTyping() {
+    const typingEl = document.getElementById('loading');
+    typingEl.querySelector("img").src = peerAvatar || '/avatar.avif';
+    if (typingEl) typingEl.style.display = 'flex';
+    }
+    function hideTyping() {
+    const typingEl = document.getElementById('loading');
+    if (typingEl) typingEl.style.display = 'none';
+    }
+
+    //----------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+    // # --------------------------------------------SEEN LOGIC AND PAGE VISIBILITY
+    HANDLING----------------------------------------------------------------
+
+    function isPageReallyVisible() {
+    return document.visibilityState === 'visible';
+    }
+    function isInView(el, container) {
+    const rect = el.getBoundingClientRect();
+    const parentRect = container.getBoundingClientRect();
+    const visibleTop = Math.max(rect.top, parentRect.top);
+    const visibleBottom = Math.min(rect.bottom, parentRect.bottom);
+    const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+    return visibleHeight >= 0.8 * rect.height;
+    }
+    function tryMarkUnseenVisibleMessages() {
+    if (!isPageReallyVisible()) return;
+    unseenPeerMsgIds.forEach(id => {
+    const el = document.getElementById('msg-in-' + id);
+    if (el && isInView(el, messagesContainer)) {
+    sendSeenForMessage(id);
+    }
+    });
+    }
+
+    const messageSeenObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+    if (entry.isIntersecting && isPageReallyVisible()) {
+    const id = entry.target.id.replace('msg-in-', '');
+    if (unseenPeerMsgIds.has(id)) {
+    sendSeenForMessage(id);
+    }
+    }
+    });
+    }, {
+    root: messagesContainer,
+    threshold: 0.8
+    });
+
+    document.addEventListener('visibilitychange', tryMarkUnseenVisibleMessages);
+    messagesContainer.addEventListener('scroll', tryMarkUnseenVisibleMessages);
+
+
+
+    function sendSeenForMessage(id) {
+    if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send(JSON.stringify({ type: 'seen', id: id }));
+    unseenPeerMsgIds.delete(id);
+    }
+    }
+
+
+    function markMessageAsSeen(messageId) {
+    var obj = myMessages[messageId];
+    if (obj && !obj.seen && obj.element) {
+    obj.seen = true;
+    var check = obj.element.querySelector('.seen-icon');
+    if (check) {
+    check.innerHTML = `<dotlottie-wc src="https://lottie.host/a3100caf-d968-4f2a-809c-d2a23630d6c6/rjOs1D7sNu.lottie"
+      style="width:40px;height:40px" speed="1.4" autoplay></dotlottie-wc>`;
+    check.style.display = 'inline';
+    }
+    obj.element.classList.add('seen');
+    }
+    }
+
+
+    //
+    -----------------------------------------------------------------------------------------------------------------------------------------------------
+
+    // ------------------------------------------------------------WEBRTC VIDEO AND AUDIO CALL
+    HANDLING---------------------------------------------------
+    function showVideoUI() {
+    videoChatContainer.style.display = '';
+    }
+    function hideVideoUI() {
+    videoChatContainer.style.display = 'none';
+    document.getElementById('call-container').style.display = 'block';
+    document.getElementById('video-container').style.display = 'block';
+
+    if (localVideo.srcObject) {
+    localVideo.srcObject.getTracks().forEach(track => track.stop());
+    localVideo.srcObject = null;
+    }
+    if (remoteVideo.srcObject) {
+    remoteVideo.srcObject.getTracks().forEach(track => track.stop());
+    remoteVideo.srcObject = null;
+    }
+    if (peerConnection) {
+    peerConnection.getSenders().forEach(sender => {
+    if (sender.track) peerConnection.removeTrack(sender);
+    });
+    }
+    localStream = null;
+    remoteStream = null;
+    }
+
+    function showAudioUI() {
+    document.querySelector(".buttonforaudio").style.display = "flex";
+    }
+
+    function stoppeercall() {
+    disconnectBtnforaudio.style.display = 'none';
+    videoChatContainer.style.display = 'none';
+    document.getElementById('call-container').style.display = 'block';
+    document.getElementById('video-container').style.display = 'block';
+    if (localVideo.srcObject) {
+    localVideo.srcObject.getTracks().forEach(track => track.stop());
+    localVideo.srcObject = null;
+    }
+    if (remoteVideo.srcObject) {
+    remoteVideo.srcObject.getTracks().forEach(track => track.stop());
+    remoteVideo.srcObject = null;
+    }
+    if (peerConnection) {
+    peerConnection.getSenders().forEach(sender => {
+    if (sender.track) peerConnection.removeTrack(sender);
+    });
+    }
+    localStream = null;
+    remoteStream = null;
+    }
+
+    async function startMedia(isVideo = true) {
+    try {
+    if (!peerConnection) setupWebRTC();
+
+    // 2. Get local media if not already
+    if (!localStream) {
+    const constraints = isVideo
+    ? { video: true, audio: true }
+    : { video: false, audio: true };
+    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    if (isVideo) {
+    showVideoUI();
+    localVideo.srcObject = localStream;
+    } else {
+    showAudioUI();
+    }
+    }
+
+    // 3. Make sure tracks are added (avoid duplicates)
+    const existingTracks = peerConnection.getSenders().map(s => s.track && s.track.id);
+    localStream.getTracks().forEach(track => {
+    if (!existingTracks.includes(track.id)) {
+    peerConnection.addTrack(track, localStream);
+    }
+    });
+
+    // 4. If USER2 is initiator, proactively create DataChannel if doesn't exist
+    if (!dataChannel && role === 'user2') {
+    dataChannel = peerConnection.createDataChannel('chat');
+    bindDataChannel();
+    }
+
+    // 5. Create & send offer (only as initiator)
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    socket.emit('offer', { roomCode, sdp: peerConnection.localDescription });
+
+    } catch (err) {
+    console.error("Error starting call:", err);
+    alert('Could not start call: ' + err.message);
+    }
+
+    }
+
+    audioCallBtn.onclick = async function () {
+    await startMedia(false);
+    if (dataChannel && dataChannel.readyState === 'open') {
+    document.getElementById('video-container').style.display = 'none';
+    document.getElementById('call-container').style.display = 'none';
+
+    const message = JSON.stringify({ type: 'call', callType: 'audio' });
+    dataChannel.send(message);
+    }
+    };
+
+
+
+    videoCallBtn.onclick = async function () {
+    await startMedia(true);
+
+    if (dataChannel && dataChannel.readyState === 'open') {
+    document.getElementById('call-container').style.display = 'none';
+    document.getElementById('video-container').style.display = 'none';
+    const message = JSON.stringify({ type: 'call', callType: 'video' });
+    dataChannel.send(message);
+    }
+    };
+
+    disconnectBtn.onclick = function () {
+    if (dataChannel && dataChannel.readyState === 'open') {
+    document.getElementById('call-container').style.display = 'none';
+    document.getElementById('video-container').style.display = 'none';
+    const message = JSON.stringify({ type: 'disconnect', callType: 'video' });
+    dataChannel.send(message);
+    hideVideoUI()
+    }
+    };
+
+    disconnectBtnforaudio.onclick = function () {
+    disconnectBtnforaudio.style.display = 'none';
+    if (dataChannel && dataChannel.readyState === 'open') {
+    document.getElementById('call-container').style.display = 'none';
+    document.getElementById('video-container').style.display = 'none';
+    const message = JSON.stringify({ type: 'disconnect', callType: 'video' });
+    dataChannel.send(message);
+    hideVideoUI()
+    }
+    };
+
+    function handleRemoteTrack(event) {
+    if (!remoteStream) {
+    remoteStream = new MediaStream();
+    remoteVideo.srcObject = remoteStream;
+    }
+    event.streams[0].getTracks().forEach(track => {
+    if (!remoteStream.getTracks().find(t => t.id === track.id)) {
+    remoteStream.addTrack(track);
+    }
+    });
+    }
+    //
+    ------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+    // #----------------------------------------------------------------RECONNECTION
+    HANDLING-------------------------------------------------------------
+
+    socket.on('disconnect', () => {
+    showStatus('Disconnected from server.', 'error');
+    disableChat();
+    hideVideoUI();
+
+    showReconnectToast(
+    `<i class="fa-solid fa-rotate-right"></i> Connection lost. Trying to reconnect... (0/${maxReconnectAttempts})`,
+    'info'
+    );
+    attemptReconnect();
+    });
+
+    function attemptReconnect() {
+    reconnectAttempts = 0;
+    if (reconnectTimer) clearInterval(reconnectTimer);
+
+    reconnectTimer = setInterval(() => {
+    reconnectAttempts++;
+    showReconnectToast(
+    `<i class="fa-solid fa-rotate-right"></i> Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`,
+    'info'
+    );
+
+    // ...emit reconnect attempt as before...
+
+    if (reconnectAttempts >= maxReconnectAttempts) {
+    clearInterval(reconnectTimer);
+    reconnectTimer = null;
+    showReconnectToast(
+    `<i class="fa-solid fa-triangle-exclamation"></i> Could not reconnect. Please reload.`,
+    'error'
+    );
+    }
+    }, reconnectIntervalMs);
+    }
+
+    socket.on('connect', () => {
+    if (reconnectTimer) {
+    onReconnectSuccess();
+    }
+    });
+
+    function onReconnectSuccess() {
+    if (reconnectTimer) {
+    clearInterval(reconnectTimer);
+    reconnectTimer = null;
+    }
+    reconnectAttempts = 0;
+    hideReconnectToast();
+    showStatus('Reconnected!', 'success');
+
+    // Re-register with the server using new socket ID BEFORE setting up WebRTC
+    socket.emit('rejoin-room', { roomCode, role });
+    }
+
+    //---------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+    function alertingpeer(callType) {
+    const videoContainer = document.getElementById('video-container');
+    const audioContainer = document.getElementById('call-container');
+    if (callType === 'video' && videoContainer.checkVisibility()) {
+
+    showStatus('Incoming Video call! Click to answer.', 'info',)
+    document.getElementById('call-container').style.display = 'none';
+    } else if (callType === 'audio' && audioContainer.checkVisibility()) {
+    showStatus('Incoming audio call! Click to answer.', 'info',)
+    document.getElementById('video-container').style.display = 'none';
+    }
+    }
+
+
+
+    // # --------------------------------------------REFRESH HANDLING AND RESTARTING
+    WEBRTC-------------------------------------------------------------
+
+    if (window.performance) {
+    if (performance.navigation.type == performance.navigation.TYPE_RELOAD) {
+    socket.emit('rejoin-room', { roomCode, role });
+    }
+    }
+
+    socket.on('restart-webrtc', () => {
+    if (peerConnection) {
+    peerConnection.close();
+    peerConnection = null;
+    }
+    dataChannel = null;
+    retryQueue = [];
+
+    enableChat();
+    });
+
+    //
+    ------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+    // #--------------------------------------------------------SOCKET.IO SIGNALING FOR OFFER, ANSWER, ICE CANDIDATE
+    HANDLING-----------------------------------------------------
+
+    socket.on('offer', async ({ sdp }) => {
+    try {
+    if (!peerConnection) setupWebRTC();
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    socket.emit('answer', { roomCode, sdp: peerConnection.localDescription });
+    } catch (err) {
+    console.error('Error handling offer:', err);
+    }
+    });
+    socket.on('answer', async ({ sdp }) => {
+    try {
+    if (!peerConnection) return;
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+    } catch (err) {
+    console.error('Error handling answer:', err);
+    }
+    });
+    socket.on('ice-candidate', ({ candidate }) => {
+    if (peerConnection && candidate) {
+    peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(err => {
+    console.error('Error adding ICE candidate:', err);
+    });
+    }
+    });
+
+    //
+    ------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+    // # -----------------------------------------OTHER HELPER FUNCTION AND SMALL LOGIC AND
+    HANDLERS-------------------------------------------------------------------------
+
+    // # for the peer when clicks leave button
+    function submitForm() {
+    socket.emit('leave-room', roomCode);
+    if (peerConnection) peerConnection.close();
+    window.location.replace("/index.html");
+    }
+
+    // # for the peer when the other peer leaves
+    socket.on('peer-left', () => {
+    if (peerConnection) peerConnection.close();
+    showStatus('Peer has left the room. You Will be redirected to home page', 'info');
+    setTimeout(() => {
+    window.location.replace("/index.html");
+    }, 5000);
+    })
+
+    // Socket.io signaling same as before
+
+    // TOAST NOTIFICATION AND STATUS HANDLING
+    function showStatus(message, type) {
+    const statusContainer = document.getElementById('status-messages');
+    const statusDiv = document.createElement('div');
+    statusDiv.className = `status ${type}`;
+    statusDiv.textContent = message;
+
+    statusContainer.appendChild(statusDiv);
+
+    setTimeout(() => {
+    statusDiv.remove();
+    }, 5000);
+    }
+
+
+    // # RECONNECT TOAST HANDLING
+    function showReconnectToast(message, type = 'info') {
+    let id = 'reconnect-toast';
+    let toast = document.getElementById(id);
+
+    if (!toast) {
+    toast = document.createElement('div');
+    toast.id = id;
+    toast.className = `toast ${type}`;
+    document.getElementById('status-messages').appendChild(toast);
+    }
+    toast.innerHTML = message;
+    toast.className = `toast ${type}`;
+    }
+
+    function hideReconnectToast() {
+    let toast = document.getElementById('reconnect-toast');
+    if (toast) toast.remove();
+    }
+
+
+    // # DRAG AND DROP VIDEO CHAT CONTAINER
+    let offsetX, offsetY;
+    function startDrag(e) {
+    offsetX = e.clientX - videoChatContainer.getBoundingClientRect().left;
+    offsetY = e.clientY - videoChatContainer.getBoundingClientRect().top;
+    document.addEventListener('mousemove', drag);
+    document.addEventListener('mouseup', endDrag);
+    }
+
+    function drag(e) {
+    videoChatContainer.style.left = `${e.clientX - offsetX}px`;
+    videoChatContainer.style.top = `${e.clientY - offsetY}px`;
+    }
+
+    function endDrag() {
+    document.removeEventListener('mousemove', drag);
+    document.removeEventListener('mouseup', endDrag);
+    }
+
+    videoChatContainer.addEventListener('mousedown', startDrag);
+
+
+    //
+    ----------------------------------------------------------------------------------------------------------------------------------------------
+
+    //----------------------------------------------------------------------# Handle
+    ONLINE/OFFLINE----------------------------------------------------------------
+
+
+    function attemptReconnectforInternet() {
+    reconnectAttempts = 0;
+    if (reconnectTimer) clearInterval(reconnectTimer);
+
+    reconnectTimer = setInterval(() => {
+    reconnectAttempts++;
+
+    // show toast while offline
+    if (!navigator.onLine) {
+    showReconnectToast(
+    `<i class="fa-solid fa-wifi"></i> Waiting for internet...`,
+    'error'
+    );
+    return; // skip socket attempts until online
+    }
+
+
+
+    if (!socket.connected) {
+    socket.connect();
+    }
+
+    if (socket.connected) {
+    restartWebRTC();
+    clearInterval(reconnectTimer);
+    reconnectTimer = null;
+    return;
+    }
+
+    // only stop retrying if online but still can't reconnect
+    if (reconnectAttempts >= maxReconnectAttempts) {
+    clearInterval(reconnectTimer);
+    reconnectTimer = null;
+    showReconnectToast(
+    `<i class="fa-solid fa-triangle-exclamation"></i> Could not reconnect. Please reload.`,
+    'error'
+    );
+    }
+    }, reconnectIntervalMs);
+    }
+
+
+    // helper to fully restart peer connection
+    function restartWebRTC() {
+    try {
+    if (peerConnection) {
+    peerConnection.close();
+    peerConnection = null;
+    }
+    dataChannel = null;
+    retryQueue = [];
+
+    // Re-register with server first, then enableChat (which calls setupWebRTC)
+    socket.emit('rejoin-room', { roomCode, role });
+
+    showStatus("🔄 Re-establishing peer connection...", "info");
+    } catch (err) {
+    console.error("Error restarting WebRTC:", err);
+    }
+    }
+
+
+
+
+    function handleOffline() {
+    disableChat();
+    showStatus("⚠️ You are offline. Waiting for internet...", "error");
+
+    // notify peer if possible
+    if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send(JSON.stringify({ type: "peer-offline" }));
+    }
+    }
+
+    // enable chat again + notify peer
+    function handleOnline() {
+    showStatus("✅ Internet reconnected. Restoring chat...", "success");
+    enableChat();
+    attemptReconnectforInternet();
+
+    if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send(JSON.stringify({ type: "peer-online" }));
+    }
+    }
+
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+
+
+
+    </script>
+
+
+    </body>
+
+    </html>
